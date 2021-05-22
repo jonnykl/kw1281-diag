@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+
+cmake_minimum_required(VERSION 3.13.1)
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(kw1281-diag)
+
+target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE src/kw1281.c)
+target_sources(app PRIVATE src/soft_uart.c)
+
