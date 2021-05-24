@@ -19,6 +19,7 @@
 #define ABS(x)                              ((x)<0 ? -(x) : (x))
 
 
+/*
 static int buf_print_float(char *buf, int buf_len, int precision, float val);
 static int buf_print_measurement(char *buf, int buf_len, uint8_t id, uint8_t a, uint8_t b);
 
@@ -26,7 +27,9 @@ static int read_fault_codes(const struct shell *shell, int clear);
 static int read_group(const struct shell *shell, uint8_t channel, uint8_t adapt);
 
 static int cmd_scan(const struct shell *shell, size_t argc, char **argv);
+*/
 static int cmd_connect(const struct shell *shell, size_t argc, char **argv);
+/*
 static int cmd_read_fault_codes(const struct shell *shell, size_t argc, char **argv);
 static int cmd_clear_fault_codes(const struct shell *shell, size_t argc, char **argv);
 static int cmd_read_group(const struct shell *shell, size_t argc, char **argv);
@@ -35,15 +38,17 @@ static int cmd_send_raw_block(const struct shell *shell, size_t argc, char **arg
 static int cmd_terminate(const struct shell *shell, size_t argc, char **argv);
 
 static void keep_alive_thread(void *arg0, void *arg1, void *arg2);
+*/
 
 
 static int init = 0;
 static struct kw1281_state state;
 K_MUTEX_DEFINE(state_mutex);
 
-K_THREAD_DEFINE(keep_alive_tid, 1024, keep_alive_thread, NULL, NULL, NULL, 5, 0, 0);
+//K_THREAD_DEFINE(keep_alive_tid, 1024, keep_alive_thread, NULL, NULL, NULL, 5, 0, 0);
 
 
+/*
 static const struct kw1281_block ack_block = {
     .length = 3,
     .title = 0x09
@@ -797,6 +802,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
 
     return 0;
 }
+*/
 
 
 static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
@@ -833,6 +839,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
         return 1;
     }
 
+    /*
     // 1. controller id
     // 2. component
     // 3. software coding
@@ -877,6 +884,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
 
         shell_print(shell, "successfully received block: %s", s);
     }
+    */
 
 
     k_mutex_unlock(&state_mutex);
@@ -888,6 +896,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
 }
 
 
+/*
 static int cmd_read_fault_codes (const struct shell *shell, size_t argc, char **argv) {
     if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
         shell_error(shell, "error: cannot lock state");
@@ -1121,6 +1130,7 @@ static void keep_alive_thread (void *arg0, void *arg1, void *arg2) {
         }
     }
 }
+*/
 
 
 
@@ -1136,12 +1146,7 @@ void main (void) {
         .timeout_receive_byte_ms = 1500,
         .timeout_sync_ms = 500,
 
-        .uart_cfg = {
-            .dev_gpio_tx = dev_gpioa,
-            .pin_gpio_tx = 2,
-            .dev_gpio_rx = dev_gpioa,
-            .pin_gpio_rx = 3
-        }
+        .uart_dev = device_get_binding(DT_LABEL(DT_NODELABEL(usart2)))
     };
 
     kw1281_init(&state, &config);
@@ -1152,12 +1157,14 @@ void main (void) {
 
 
 
-SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for targets", cmd_scan, 0, 0);
+//SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for targets", cmd_scan, 0, 0);
 SHELL_CMD_ARG_REGISTER(connect, NULL, "Connect to target", cmd_connect, 2, 0);
+/*
 SHELL_CMD_ARG_REGISTER(read_fault_codes, NULL, "Read fault codes", cmd_read_fault_codes, 1, 0);
 SHELL_CMD_ARG_REGISTER(clear_fault_codes, NULL, "Clear fault codes", cmd_clear_fault_codes, 1, 0);
 SHELL_CMD_ARG_REGISTER(read_group, NULL, "Read group without adaption", cmd_read_group, 2, 0);
 SHELL_CMD_ARG_REGISTER(basic_setting, NULL, "Read group with adaption", cmd_basic_setting, 2, 0);
 SHELL_CMD_ARG_REGISTER(send_raw_block, NULL, "Send raw block", cmd_send_raw_block, 2, KW1281_MAX_BLOCK_DATA_LEN);
 SHELL_CMD_ARG_REGISTER(terminate, NULL, "Terminate connection", cmd_terminate, 1, 0);
+*/
 
