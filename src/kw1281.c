@@ -7,30 +7,31 @@
 
 
 // TODO: timeouts
+// TODO: error handing: uart_configure, k_timer_init
 
 
-static void kw1281_uart_configure (struct kw1281_state *state, uint32_t baudrate, uint8_t parity, uint8_t data_bits) {
-    if (state->rx_enabled) {
-        uart_rx_disable(state->cfg.uart_dev);
-        state->rx_enabled = 0;
-    }
-
-    state->uart_cfg.baudrate = baudrate;
-    state->uart_cfg.parity = parity;
-    state->uart_cfg.data_bits = data_bits;
-
-    uart_configure(state->cfg.uart_dev, &state->uart_cfg);
-    uart_rx_enable(state->cfg.uart_dev, state->rx_buf, sizeof(state->rx_buf), SYS_FOREVER_MS);
-
-    state->rx_enabled = 1;
-}
-
+// state mutex must be locked when calling this function
 static void kw1281_uart_tx (struct kw1281_state *state, uint8_t data, k_timeout_t delay) {
     state->tx_data = data;
-    k_timer_start(&state->timer_wait_tx, delay, K_NO_WAIT);
     state->tx_data_valid = 1;
+    k_timer_start(&state->timer_tx, delay, K_NO_WAIT);
 }
 
+// state mutex must be locked when calling this function
+static void kw1281_uart_configure (struct kw1281_state *state, uint8_t data_bits, uint8_t parity) {
+    uint8_t tmp;
+
+    state->uart_cfg.data_bits = data_bits;
+    state->uart_cfg.parity = parity;
+
+    uart_configure(state->cfg.uart_dev, &state->uart_cfg);
+
+    // clear uart rx buffer
+    while (uart_poll_in(state->cfg.uart_dev, &tmp) == 0) {}
+}
+
+
+// this function must not be called directly, use kw1281_update instead
 static uint8_t kw1281_update_step (struct kw1281_state *state) {
     enum kw1281_protocol_state new_state = state->protocol_state;
     uint8_t need_update = 0;
@@ -41,7 +42,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
         state->disconnect_request = 0;
 
         if (state->rx_enabled) {
-            uart_rx_disable(state->cfg.uart_dev);
+            k_timer_stop(&state->timer_rx);
             state->rx_enabled = 0;
         }
 
@@ -54,6 +55,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
             if (state->connect_request) {
                 state->connect_request = 0;
 
+                state->slow_init_started = 0;
                 state->tx_counter = 0;
                 new_state = KW1281_PROTOCOL_STATE_CONNECT_ADDR;
                 need_update = 1;
@@ -62,11 +64,18 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
 
         case KW1281_PROTOCOL_STATE_CONNECT_ADDR:
-            if (state->tx_counter < 1) {
-                kw1281_uart_configure(state, 5, UART_CFG_PARITY_ODD, UART_CFG_DATA_BITS_7);
+            if (!state->slow_init_started) {
+                state->slow_init_started = 1;
+                k_timer_start(&state->timer_slow_init, K_NO_WAIT, K_MSEC(200));
+            } else if (state->tx_counter == 11) {
+                // some MCUs do not support 7 data bits, so always use 8 data bits and handle the parity bit in this module
+                kw1281_uart_configure(state, UART_CFG_DATA_BITS_8, UART_CFG_PARITY_NONE);
 
-                kw1281_uart_tx(state, state->address & 0x7F, K_NO_WAIT);
-                state->tx_counter++;
+                k_timer_start(&state->timer_rx, K_NO_WAIT, K_MSEC(state->cfg.inter_byte_time_ms/5));
+                state->rx_enabled = 1;
+
+                new_state = KW1281_PROTOCOL_STATE_CONNECT_SYNC;
+                need_update = 1;
             }
             break;
 
@@ -130,21 +139,12 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
         switch (state->protocol_state) {
             case KW1281_PROTOCOL_STATE_DISCONNECTED:
+            case KW1281_PROTOCOL_STATE_CONNECT_ADDR:
                 // should not happen as rx should be disabled
                 // ignore
 
                 break;
 
-
-            case KW1281_PROTOCOL_STATE_CONNECT_ADDR:
-                if (!state->tx_data_valid && state->rx_data == state->address) {
-                    kw1281_uart_configure(state, 10400, UART_CFG_PARITY_ODD, UART_CFG_DATA_BITS_7);
-                    new_state = KW1281_PROTOCOL_STATE_CONNECT_SYNC;
-                } else {
-                    state->error = KW1281_ERROR_COLLISION;
-                    error = 1;
-                }
-                break;
 
             case KW1281_PROTOCOL_STATE_CONNECT_SYNC:
                 if (state->rx_data == 0x55) {
@@ -159,10 +159,12 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
             case KW1281_PROTOCOL_STATE_CONNECT_KEY_WORD:
                 if (!state->ack) {
+                    // TODO: check parity bit
+
                     if (state->rx_counter == 0) {
-                        state->key_word = state->rx_data;
+                        state->key_word = state->rx_data & 0x7F;
                     } else {
-                        state->key_word |= state->rx_data<<8;
+                        state->key_word |= (state->rx_data & 0x7F)<<7;
                     }
 
                     state->rx_counter++;
@@ -175,8 +177,6 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                 } else {
                     if (!state->tx_data_valid && state->rx_data == state->tx_data) {
                         // TODO: verify key_word
-
-                        kw1281_uart_configure(state, 10400, UART_CFG_PARITY_NONE, UART_CFG_DATA_BITS_8);
 
                         state->ack = 0;
                         new_state = KW1281_PROTOCOL_STATE_RX_LEN;
@@ -212,6 +212,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                         }
                     }
                 } else {
+                    // TODO: buffer
                     state->error = KW1281_ERROR_OVERRUN;
                     error = 1;
                 }
@@ -258,6 +259,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                             new_state = KW1281_PROTOCOL_STATE_RX_END;
                         }
                     } else {
+                        printk(">>> collision: %02x %02x\n", state->rx_data, state->tx_data);
                         state->error = KW1281_ERROR_COLLISION;
                         error = 1;
                     }
@@ -385,60 +387,87 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
 
     if (error) {
+        printk("> error: %d\n", state->error);
         state->disconnect_request = 1;
         new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
         need_update = 1;
     }
 
 
+    printk("> update state: state=%d, new_state=%d\n", state->protocol_state, new_state);
     state->protocol_state = new_state;
 
     return need_update;
 }
 
+// state mutex must be locked when calling this function
 static void kw1281_update (struct kw1281_state *state) {
     while (kw1281_update_step(state)) {}
 }
 
-static void kw1281_uart_callback (const struct device *dev, struct uart_event *event, void *data) {
-    struct kw1281_state *state = data;
 
-    if (event->type == UART_RX_RDY) {
-        for (int i=0; i<event->data.rx.len; i++) {
-            state->rx_data = event->data.rx.buf[event->data.rx.offset+i];
+static void kw1281_tx (struct k_timer *timer) {
+    struct kw1281_state *state = k_timer_user_data_get(timer);
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    uart_poll_out(state->cfg.uart_dev, state->tx_data);
+    state->tx_data_valid = 0;
+    kw1281_update(state);
+
+    k_mutex_unlock(&state->mutex);
+}
+
+static void kw1281_rx (struct k_timer *timer) {
+    struct kw1281_state *state = k_timer_user_data_get(timer);
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    if (!state->rx_data_valid) {
+        if (uart_poll_in(state->cfg.uart_dev, &state->rx_data) == 0) {
             state->rx_data_valid = 1;
-
             kw1281_update(state);
         }
+    } else {
+        state->error = KW1281_ERROR_OVERRUN;
+        state->disconnect_request = 1;
+        kw1281_update(state);
     }
+
+    k_mutex_unlock(&state->mutex);
+}
+
+static void kw1281_slow_init_tx (struct k_timer *timer) {
+    struct kw1281_state *state = k_timer_user_data_get(timer);
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    uint8_t bit = state->tx_counter;
+
+    if (bit == 0) {
+        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, 0);
+    } else if (bit == 9) {
+        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, 1);
+    } else if (bit == 10) {
+        k_timer_stop(timer);
+    } else {
+        uint8_t data_bit = (state->address >> (bit-1)) & 1;
+        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, data_bit);
+
+        // calculate parity
+        state->address ^= data_bit<<7;
+    }
+
+    state->tx_counter++;
+    kw1281_update(state);
+
+    k_mutex_unlock(&state->mutex);
 }
 
 
-static void kw1281_thread_tx (void *arg0, void *arg1, void *arg2) {
-    struct kw1281_state *state = arg0;
-
-    for (;;) {
-        if (state->tx_data_valid) {
-            k_timer_status_sync(&state->timer_wait_tx);
-            uart_tx(state->cfg.uart_dev, &state->tx_data, 1, SYS_FOREVER_MS);
-            state->tx_data_valid = 0;
-
-            // TODO: here or in tx callback?
-            kw1281_update(state);       // TODO: thread sync
-        } else {
-            k_msleep(1);        // TODO: tx_data_ready as condition variable
-        }
-    }
-}
-
-
-void kw1281_init (struct kw1281_state *state, struct kw1281_config *config) {
+void kw1281_init (struct kw1281_state *state, const struct kw1281_config *config) {
     memcpy(&state->cfg, config, sizeof(struct kw1281_config));
 
-    uart_callback_set(state->cfg.uart_dev, kw1281_uart_callback, state);
+    k_mutex_init(&state->mutex);
 
-    k_timer_init(&state->timer_wait_tx, NULL, NULL);
-
+    state->uart_cfg.baudrate = state->cfg.baudrate;
     state->uart_cfg.stop_bits = UART_CFG_STOP_BITS_1;
     state->uart_cfg.flow_ctrl = UART_CFG_FLOW_CTRL_NONE;
 
@@ -451,24 +480,40 @@ void kw1281_init (struct kw1281_state *state, struct kw1281_config *config) {
     state->disconnect_request = 0;
     state->rx_enabled = 0;
 
-    k_thread_create(&state->tx_thread_data, state->tx_thread_stack, K_THREAD_STACK_SIZEOF(state->tx_thread_stack), kw1281_thread_tx, state, NULL, NULL, 5 /* TODO */, 0, K_NO_WAIT);
+    gpio_pin_configure(state->cfg.slow_init_dev, state->cfg.slow_init_pin, GPIO_OUTPUT_HIGH);
+
+    k_timer_init(&state->timer_slow_init, kw1281_slow_init_tx, NULL);
+    k_timer_user_data_set(&state->timer_slow_init, state);
+
+    k_timer_init(&state->timer_tx, kw1281_tx, NULL);
+    k_timer_user_data_set(&state->timer_tx, state);
+
+    k_timer_init(&state->timer_rx, kw1281_rx, NULL);
+    k_timer_user_data_set(&state->timer_rx, state);
 }
 
 uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr) {
-    if (!kw1281_is_disconnected(state)) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    if (state->protocol_state != KW1281_PROTOCOL_STATE_DISCONNECTED) {
         return 0;
     }
 
     state->counter = 1;
 
-    state->address = addr;
+    state->address = addr | 0x80;       // prepare for (odd) parity calculation
     state->connect_request = 1;
 
+    kw1281_update(state);
+
+    k_mutex_unlock(&state->mutex);
     return 1;
 }
 
 uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block *block) {
-    if (kw1281_is_disconnected(state) || state->tx_block_valid || block->length < 3) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || state->tx_block_valid || block->length < 3) {
         return 0;
     }
 
@@ -478,34 +523,52 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
 
     kw1281_update(state);
 
+    k_mutex_unlock(&state->mutex);
     return 1;
 }
 
 uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *block) {
-    if (kw1281_is_disconnected(state) || !state->rx_block_valid) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || !state->rx_block_valid) {
         return 0;
     }
 
     *block = state->rx_block;
     state->rx_block_valid = 0;
 
+    k_mutex_unlock(&state->mutex);
     return 1;
 }
 
 void kw1281_disconnect (struct kw1281_state *state) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
     state->disconnect_request = 1;
+    k_mutex_unlock(&state->mutex);
 }
 
 uint8_t kw1281_is_disconnected (struct kw1281_state *state) {
-    return state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED;
+    uint8_t is_disconnected;
+
+    k_mutex_lock(&state->mutex, K_FOREVER);
+    is_disconnected = state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED;
+    k_mutex_unlock(&state->mutex);
+
+    return is_disconnected;
 }
 
 enum kw1281_error kw1281_get_error (struct kw1281_state *state) {
-    return state->error;
+    enum kw1281_error error;
+
+    k_mutex_lock(&state->mutex, K_FOREVER);
+    error = state->error;
+    k_mutex_unlock(&state->mutex);
+
+    return error;
 }
 
 const char * kw1281_get_error_msg (struct kw1281_state *state) {
-    switch (state->error) {
+    switch (kw1281_get_error(state)) {
         case KW1281_ERROR_COLLISION:
             return "received data did not match sent data";
 

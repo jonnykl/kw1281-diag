@@ -7,5 +7,4 @@ project(kw1281-diag)
 
 target_sources(app PRIVATE src/main.c)
 target_sources(app PRIVATE src/kw1281.c)
-target_sources(app PRIVATE src/soft_uart.c)
 

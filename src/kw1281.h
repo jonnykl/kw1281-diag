@@ -63,6 +63,7 @@ struct kw1281_block {
 
 
 struct kw1281_config {
+    uint16_t baudrate;
     uint8_t inter_byte_time_ms;                 // time between two bytes on the k line
     uint16_t inter_block_time_ms;
 
@@ -72,9 +73,13 @@ struct kw1281_config {
     uint32_t timeout_sync_ms;
 
     const struct device *uart_dev;
+    const struct device *slow_init_dev;
+    int slow_init_pin;
 };
 
 struct kw1281_state {
+    struct k_mutex mutex;
+
     uint16_t key_word;
     uint8_t counter;
     enum kw1281_error error;
@@ -82,7 +87,9 @@ struct kw1281_state {
     struct kw1281_block tx_block;
     uint8_t rx_counter;
     uint8_t tx_counter;
-    struct k_timer timer_wait_tx;
+    struct k_timer timer_slow_init;
+    struct k_timer timer_tx;
+    struct k_timer timer_rx;
     uint8_t rx_data;
     uint8_t tx_data;
     uint8_t address;
@@ -93,21 +100,18 @@ struct kw1281_state {
     uint8_t rx_block_valid;
     uint8_t tx_block_valid;
     uint8_t rx_enabled;
+    uint8_t slow_init_started;
 
     uint8_t connect_request;
     uint8_t disconnect_request;
 
-    uint8_t rx_buf[2];       // TODO
     struct uart_config uart_cfg;
-
-    struct k_thread tx_thread_data;
-    K_THREAD_STACK_DEFINE(tx_thread_stack, KW1281_TX_THREAD_STACK_SIZE);
 
     struct kw1281_config cfg;
 };
 
 
-void kw1281_init(struct kw1281_state *state, struct kw1281_config *config);
+void kw1281_init(struct kw1281_state *state, const struct kw1281_config *config);
 uint8_t kw1281_connect(struct kw1281_state *state, uint8_t addr);
 uint8_t kw1281_send_block(struct kw1281_state *state, const struct kw1281_block *block);
 uint8_t kw1281_receive_block(struct kw1281_state *state, struct kw1281_block *block);
