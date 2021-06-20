@@ -5,7 +5,7 @@
 
 
 // TODO
-#define SOFT_UART_RX_THREAD_STACK_SIZE              256
+#define SOFT_UART_RX_THREAD_STACK_SIZE              1024
 #define SOFT_UART_RX_THREAD_PRIORITY                -5
 #define SOFT_UART_TX_THREAD_PRIORITY                -5
 
@@ -15,48 +15,136 @@ static struct k_thread soft_uart_rx_thread_data;
 static K_THREAD_STACK_DEFINE(soft_uart_rx_thread_stack, SOFT_UART_RX_THREAD_STACK_SIZE);
 static k_tid_t soft_uart_rx_thread_id;
 
-static int foo_value = 0;
+static volatile int foo_value = 0;
 
 
-// TODO: use PWM capture instead (if this makes sense ...)
-// if not:
 // gpio callback (falling edge) ->
 // - save current cycle count
 // - disable interrupt
 // - start rx
+//
 // OR:
+//
 // gpio callback (both edges) ->
 // - save current cycle count to list
 // - evaluate received data in thread
 
+static struct soft_uart_config foo_config;
+
+/*
+static int soft_uart_rx_bit_counter = 0;
+static uint16_t soft_uart_rx_data;
+static uint32_t soft_uart_rx_t_start;
+static uint32_t soft_uart_rx_buf = 0;
+
 static void soft_uart_rx_gpio_handler (const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
+    struct soft_uart_config *config = foo_config;
+
+    uint32_t t = sys_clock_cycle_get_32();
+    uint32_t bit_cycles =  sys_clock_hw_cycles_per_sec() / config->baudrate;
+    int max_bit_count = 1 + 8 + 1;      // TODO config
+
     int pin = 0;
     while (pins != 1) {
         pin += 1;
         pins >>= 1;
     }
 
-    gpio_pin_interrupt_configure(dev, pin, GPIO_INT_DISABLE);
+    int bit = gpio_pin_get_raw(dev, pin);
+
+    if (soft_uart_rx_bit_counter == 0) {
+        if (bit == 0) {
+            soft_uart_rx_t_start = t;
+            // TODO: setup timeout
+
+            soft_uart_rx_data = 0;
+            soft_uart_rx_bit_counter++;
+        } else {
+            // ignore
+        }
+    } else {
+        uint32_t num_bits = (t - soft_uart_rx_t_start + (bit_cycles/2)) / bit_cycles;
+        if ((soft_uart_rx_bit_counter + num_bits) <= max_bit_count) {
+            soft_uart_rx_data = (0xFFFF << (16-num_bits)) | (soft_uart_rx_data >> num_bits);
+            soft_uart_rx_bit_counter += num_bits;
+
+            if (soft_uart_rx_bit_counter == max_bit_count) {
+                soft_uart_rx_buf = (1UL<<31) | soft_uart_rx_data;
+                soft_uart_rx_bit_counter = 0;
+            }
+        } else {
+            // error -> reset
+            soft_uart_rx_bit_counter = 0;
+        }
+    }
+}
+*/
+
+static uint32_t soft_uart_rx_t_start;
+static volatile uint32_t soft_uart_rx_data = 0;
+
+K_SEM_DEFINE(soft_uart_rx_sem, 0, 1);
+
+static void soft_uart_rx_gpio_handler (const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
+    struct soft_uart_config *config = &foo_config;
 
     foo_value = !foo_value;
-    gpio_pin_set_raw(dev, 1, foo_value);
+    gpio_pin_set_raw(config->dev_gpio_rx, 1, foo_value);
+
+    uint32_t t_start = sys_clock_cycle_get_32();
+    uint32_t bit_cycles =  sys_clock_hw_cycles_per_sec() / config->baudrate;
+
+    int bit = gpio_pin_get_raw(config->dev_gpio_rx, config->pin_gpio_rx);
+    if (bit == 0) {
+        //gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_DISABLE);
+
+        uint16_t data = 0;
+        int num_bits = 8+1;       // TODO config
+
+        //while((sys_clock_cycle_get_32()-t_start) < bit_cycles/2);
+        //t_start += bit_cycles/2;
+
+        foo_value = !foo_value;
+        gpio_pin_set_raw(config->dev_gpio_rx, 1, foo_value);
+
+        for (int i=0; i<num_bits; i++) {
+            while((sys_clock_cycle_get_32()-t_start) < (i+1)*bit_cycles);
+
+            bit = gpio_pin_get_raw(config->dev_gpio_rx, config->pin_gpio_rx);
+            data = (bit << (num_bits-1)) | (data >> 1);
+
+            foo_value = !foo_value;
+            gpio_pin_set_raw(config->dev_gpio_rx, 1, foo_value);
+        }
+
+        while((sys_clock_cycle_get_32()-t_start) < ((num_bits-1)*bit_cycles + bit_cycles/2));
+
+        soft_uart_rx_data = (1UL<<31) | (data & 0xFF);
+        k_sem_give(&soft_uart_rx_sem);
+    }
 }
 
 static void soft_uart_rx_thread (void *p1, void *p2, void *p3) {
-    struct soft_uart_config *config = p1;
+    //struct soft_uart_config *config = p1;
+    struct soft_uart_config *config = &foo_config;
 
     static struct gpio_callback callback;
     gpio_init_callback(&callback, soft_uart_rx_gpio_handler, BIT(config->pin_gpio_rx));
     gpio_add_callback(config->dev_gpio_rx, &callback);
 
-    gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_EDGE_FALLING);
-    //gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_DISABLE);
-    //gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_EDGE_FALLING);
+    gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_EDGE_BOTH);
+
+    foo_value = !foo_value;
+    gpio_pin_set_raw(config->dev_gpio_rx, 1, foo_value);
 
     for (;;) {
-        //gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_EDGE_FALLING);
-        //gpio_pin_interrupt_configure(config->dev_gpio_rx, config->pin_gpio_rx, GPIO_INT_DISABLE);
-        k_msleep(1000);
+        k_sem_take(&soft_uart_rx_sem, K_FOREVER);
+
+        foo_value = !foo_value;
+        gpio_pin_set_raw(config->dev_gpio_rx, 1, foo_value);
+
+        printk("rx: %02x\n", (int) (soft_uart_rx_data & 0xFF));
+        soft_uart_rx_data = 0;
     }
 }
 
@@ -69,9 +157,11 @@ void soft_uart_init (struct soft_uart_config *config) {
     gpio_pin_configure(config->dev_gpio_rx, 1, GPIO_OUTPUT_LOW);
     foo_value = 0;
 
+    foo_config = *config;
+
     soft_uart_rx_thread_id = k_thread_create(&soft_uart_rx_thread_data,
             soft_uart_rx_thread_stack, K_THREAD_STACK_SIZEOF(soft_uart_rx_thread_stack),
-            soft_uart_rx_thread, config, NULL, NULL,
+            soft_uart_rx_thread, NULL, NULL, NULL,
             SOFT_UART_RX_THREAD_PRIORITY, 0, K_NO_WAIT);
 }
 
