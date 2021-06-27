@@ -19,7 +19,6 @@
 #define ABS(x)                              ((x)<0 ? -(x) : (x))
 
 
-/*
 static int buf_print_float(char *buf, int buf_len, int precision, float val);
 static int buf_print_measurement(char *buf, int buf_len, uint8_t id, uint8_t a, uint8_t b);
 
@@ -27,9 +26,7 @@ static int read_fault_codes(const struct shell *shell, int clear);
 static int read_group(const struct shell *shell, uint8_t channel, uint8_t adapt);
 
 static int cmd_scan(const struct shell *shell, size_t argc, char **argv);
-*/
 static int cmd_connect(const struct shell *shell, size_t argc, char **argv);
-/*
 static int cmd_read_fault_codes(const struct shell *shell, size_t argc, char **argv);
 static int cmd_clear_fault_codes(const struct shell *shell, size_t argc, char **argv);
 static int cmd_read_group(const struct shell *shell, size_t argc, char **argv);
@@ -38,17 +35,15 @@ static int cmd_send_raw_block(const struct shell *shell, size_t argc, char **arg
 static int cmd_terminate(const struct shell *shell, size_t argc, char **argv);
 
 static void keep_alive_thread(void *arg0, void *arg1, void *arg2);
-*/
 
 
 static int init = 0;
 static struct kw1281_state state;
 K_MUTEX_DEFINE(state_mutex);
 
-//K_THREAD_DEFINE(keep_alive_tid, 1024, keep_alive_thread, NULL, NULL, NULL, 5, 0, 0);
+K_THREAD_DEFINE(keep_alive_tid, 1024, keep_alive_thread, NULL, NULL, NULL, 5, 0, 0);
 
 
-/*
 static const struct kw1281_block ack_block = {
     .length = 3,
     .title = 0x09
@@ -589,7 +584,7 @@ static int buf_print_measurement (char *buf, int buf_len, uint8_t id, uint8_t a,
 static int read_fault_codes (const struct shell *shell, int clear) {
     struct kw1281_block block;
 
-    if (!kw1281_is_connected(&state)) {
+    if (kw1281_is_disconnected(&state)) {
         shell_error(shell, "error: not connected");
         return 1;
     }
@@ -598,7 +593,7 @@ static int read_fault_codes (const struct shell *shell, int clear) {
     block.length = 3;
     block.title = !clear ? 0x07 : 0x05;
 
-    if (!kw1281_send_block(&state, &block, KW1281_AUTO_COUNTER)) {
+    if (!kw1281_send_block(&state, &block, 0)) {
         shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
         kw1281_disconnect(&state);
 
@@ -606,7 +601,7 @@ static int read_fault_codes (const struct shell *shell, int clear) {
     }
 
     for (;;) {
-        if (!kw1281_receive_block(&state, &block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_receive_block(&state, &block)) {
             shell_error(shell, "error: receive_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -619,7 +614,7 @@ static int read_fault_codes (const struct shell *shell, int clear) {
             break;
         }
 
-        if (!kw1281_send_block(&state, &ack_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_send_block(&state, &ack_block, 0)) {
             shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -658,7 +653,7 @@ static int read_group (const struct shell *shell, uint8_t channel, uint8_t adapt
     block.title = !adapt ? 0x29 : 0x28;
     block.data[0] = channel;
 
-    if (!kw1281_send_block(&state, &block, KW1281_AUTO_COUNTER)) {
+    if (!kw1281_send_block(&state, &block, 0)) {
         shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
         kw1281_disconnect(&state);
 
@@ -668,7 +663,7 @@ static int read_group (const struct shell *shell, uint8_t channel, uint8_t adapt
     char buf[64];
 
     for (;;) {
-        if (!kw1281_receive_block(&state, &block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_receive_block(&state, &block)) {
             shell_error(shell, "error: receive_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -682,7 +677,7 @@ static int read_group (const struct shell *shell, uint8_t channel, uint8_t adapt
             break;
         }
 
-        if (!kw1281_send_block(&state, &ack_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_send_block(&state, &ack_block, 0)) {
             shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -725,7 +720,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
     }
 
 
-    if (kw1281_is_connected(&state)) {
+    if (!kw1281_is_disconnected(&state)) {
         shell_error(shell, "error: connected");
 
         k_mutex_unlock(&state_mutex);
@@ -739,7 +734,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
         k_msleep(100);
 
 
-        if (!kw1281_connect(&state, address)) {
+        if (!kw1281_connect(&state, address, 1)) {
             continue;
         }
 
@@ -752,7 +747,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
         // 5. additional info
 
         for (;;) {
-            if (!kw1281_receive_block(&state, &block, KW1281_AUTO_COUNTER)) {
+            if (!kw1281_receive_block(&state, &block)) {
                 shell_error(shell, "error: receive_block: %s", kw1281_get_error_msg(&state));
                 kw1281_disconnect(&state);
 
@@ -766,7 +761,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
                 break;
             }
 
-            if (!kw1281_send_block(&state, &ack_block, KW1281_AUTO_COUNTER)) {
+            if (!kw1281_send_block(&state, &ack_block, 0)) {
                 shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
                 kw1281_disconnect(&state);
 
@@ -790,7 +785,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
 
         // terminate connection
 
-        if (!kw1281_send_block(&state, &end_output_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_send_block(&state, &end_output_block, 1)) {
             shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
         }
 
@@ -802,7 +797,6 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
 
     return 0;
 }
-*/
 
 
 static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
@@ -821,7 +815,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
     }
 
 
-    if (kw1281_is_connected(&state)) {
+    if (!kw1281_is_disconnected(&state)) {
         shell_error(shell, "error: already connected");
 
         k_mutex_unlock(&state_mutex);
@@ -831,7 +825,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
 
     struct kw1281_block block;
 
-    if (!kw1281_connect(&state, address)) {
+    if (!kw1281_connect(&state, address, 1)) {
         shell_error(shell, "error: connect: %s", kw1281_get_error_msg(&state));
         kw1281_disconnect(&state);
 
@@ -839,7 +833,6 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
         return 1;
     }
 
-    /*
     // 1. controller id
     // 2. component
     // 3. software coding
@@ -847,7 +840,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
     // 5. additional info
 
     for (;;) {
-        if (!kw1281_receive_block(&state, &block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_receive_block(&state, &block)) {
             shell_error(shell, "error: receive_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -862,7 +855,7 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
             break;
         }
 
-        if (!kw1281_send_block(&state, &ack_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_send_block(&state, &ack_block, 0)) {
             shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -884,7 +877,6 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
 
         shell_print(shell, "successfully received block: %s", s);
     }
-    */
 
 
     k_mutex_unlock(&state_mutex);
@@ -896,7 +888,6 @@ static int cmd_connect (const struct shell *shell, size_t argc, char **argv) {
 }
 
 
-/*
 static int cmd_read_fault_codes (const struct shell *shell, size_t argc, char **argv) {
     if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
         shell_error(shell, "error: cannot lock state");
@@ -1007,7 +998,7 @@ static int cmd_send_raw_block (const struct shell *shell, size_t argc, char **ar
     }
 
 
-    if (!kw1281_send_block(&state, &block, KW1281_AUTO_COUNTER)) {
+    if (!kw1281_send_block(&state, &block, 0)) {
         shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
         kw1281_disconnect(&state);
 
@@ -1021,7 +1012,7 @@ static int cmd_send_raw_block (const struct shell *shell, size_t argc, char **ar
     char *buf_ptr = NULL;
 
     for (;;) {
-        if (!kw1281_receive_block(&state, &recv_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_receive_block(&state, &recv_block)) {
             shell_error(shell, "error: receive_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -1036,7 +1027,7 @@ static int cmd_send_raw_block (const struct shell *shell, size_t argc, char **ar
             break;
         }
 
-        if (!kw1281_send_block(&state, &ack_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_send_block(&state, &ack_block, 0)) {
             shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
             kw1281_disconnect(&state);
 
@@ -1069,12 +1060,12 @@ static int cmd_terminate (const struct shell *shell, size_t argc, char **argv) {
     }
 
 
-    if (!kw1281_is_connected(&state)) {
+    if (kw1281_is_disconnected(&state)) {
         shell_warn(shell, "warning: not connected");
     }
 
 
-    if (!kw1281_send_block(&state, &end_output_block, KW1281_AUTO_COUNTER)) {
+    if (!kw1281_send_block(&state, &end_output_block, 1)) {
         shell_error(shell, "error: send_block: %s", kw1281_get_error_msg(&state));
         kw1281_disconnect(&state);
 
@@ -1106,15 +1097,15 @@ static void keep_alive_thread (void *arg0, void *arg1, void *arg2) {
         k_msleep(KEEP_ALIVE_INTERVAL_MS);
         k_mutex_lock(&state_mutex, K_FOREVER);
 
-        if (kw1281_is_connected(&state)) {
-            if (!kw1281_send_block(&state, &ack_block, KW1281_AUTO_COUNTER)) {
+        if (!kw1281_is_disconnected(&state)) {
+            if (!kw1281_send_block(&state, &ack_block, 0)) {
                 shell_error(shell_backend_uart_get_ptr(), "error: send_block: %s", kw1281_get_error_msg(&state));
                 kw1281_disconnect(&state);
 
                 continue;
             }
 
-            if (!kw1281_receive_block(&state, &block, KW1281_AUTO_COUNTER)) {
+            if (!kw1281_receive_block(&state, &block)) {
                 shell_error(shell_backend_uart_get_ptr(), "error: receive_block: %s", kw1281_get_error_msg(&state));
                 kw1281_disconnect(&state);
 
@@ -1130,23 +1121,27 @@ static void keep_alive_thread (void *arg0, void *arg1, void *arg2) {
         }
     }
 }
-*/
 
 
 
 void main (void) {
-    const struct device *dev_gpioa = device_get_binding(DT_LABEL(DT_NODELABEL(gpioa)));
-
     struct kw1281_config config = {
+        .baudrate = 10400,
         .inter_byte_time_ms = 10,
         .inter_block_time_ms = 30,
 
         .key_word_ack_delay_ms = 30,
 
-        .timeout_receive_byte_ms = 1500,
-        .timeout_sync_ms = 500,
+        .timeout_connect_ms = 3000,
+        .timeout_receive_block_ongoing_tx_ms = 1000,
+        .timeout_receive_block_rx_start_ms = 1500,
+        .timeout_receive_block_rx_ms = 1000,
+        .timeout_transmit_block_ongoing_tx_ms = 1000,
+        .timeout_transmit_block_tx_ms = 1000,
 
-        .uart_dev = device_get_binding(DT_LABEL(DT_NODELABEL(usart2)))
+        .uart_dev = device_get_binding(DT_LABEL(DT_NODELABEL(usart2))),
+        .slow_init_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioa))),
+        .slow_init_pin = 1
     };
 
     kw1281_init(&state, &config);
@@ -1157,14 +1152,12 @@ void main (void) {
 
 
 
-//SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for targets", cmd_scan, 0, 0);
+SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for targets", cmd_scan, 0, 0);
 SHELL_CMD_ARG_REGISTER(connect, NULL, "Connect to target", cmd_connect, 2, 0);
-/*
 SHELL_CMD_ARG_REGISTER(read_fault_codes, NULL, "Read fault codes", cmd_read_fault_codes, 1, 0);
 SHELL_CMD_ARG_REGISTER(clear_fault_codes, NULL, "Clear fault codes", cmd_clear_fault_codes, 1, 0);
 SHELL_CMD_ARG_REGISTER(read_group, NULL, "Read group without adaption", cmd_read_group, 2, 0);
 SHELL_CMD_ARG_REGISTER(basic_setting, NULL, "Read group with adaption", cmd_basic_setting, 2, 0);
 SHELL_CMD_ARG_REGISTER(send_raw_block, NULL, "Send raw block", cmd_send_raw_block, 2, KW1281_MAX_BLOCK_DATA_LEN);
 SHELL_CMD_ARG_REGISTER(terminate, NULL, "Terminate connection", cmd_terminate, 1, 0);
-*/
 

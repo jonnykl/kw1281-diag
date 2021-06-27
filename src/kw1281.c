@@ -6,10 +6,6 @@
 #include "kw1281.h"
 
 
-// TODO: timeouts
-// TODO: error handing: uart_configure, k_timer_init
-
-
 // state mutex must be locked when calling this function
 static void kw1281_uart_tx (struct kw1281_state *state, uint8_t data, k_timeout_t delay) {
     state->tx_data = data;
@@ -18,16 +14,21 @@ static void kw1281_uart_tx (struct kw1281_state *state, uint8_t data, k_timeout_
 }
 
 // state mutex must be locked when calling this function
-static void kw1281_uart_configure (struct kw1281_state *state, uint8_t data_bits, uint8_t parity) {
+static uint8_t kw1281_uart_configure (struct kw1281_state *state, uint8_t data_bits, uint8_t parity) {
     uint8_t tmp;
 
     state->uart_cfg.data_bits = data_bits;
     state->uart_cfg.parity = parity;
 
-    uart_configure(state->cfg.uart_dev, &state->uart_cfg);
+    if (uart_configure(state->cfg.uart_dev, &state->uart_cfg) < 0) {
+        state->error = KW1281_ERROR_UART_CONFIG;
+        return 0;
+    }
 
     // clear uart rx buffer
     while (uart_poll_in(state->cfg.uart_dev, &tmp) == 0) {}
+
+    return 1;
 }
 
 
@@ -46,7 +47,8 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
             state->rx_enabled = 0;
         }
 
-        state->protocol_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
+        new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
+        state->protocol_state = new_state;
     }
 
 
@@ -55,9 +57,15 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
             if (state->connect_request) {
                 state->connect_request = 0;
 
-                state->slow_init_started = 0;
-                state->tx_counter = 0;
-                new_state = KW1281_PROTOCOL_STATE_CONNECT_ADDR;
+                // some MCUs do not support 7 data bits, so always use 8 data bits and handle the parity bit in this module
+                if (kw1281_uart_configure(state, UART_CFG_DATA_BITS_8, UART_CFG_PARITY_NONE)) {
+                    state->slow_init_started = 0;
+                    state->tx_counter = 0;
+                    new_state = KW1281_PROTOCOL_STATE_CONNECT_ADDR;
+                } else {
+                    new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
+                }
+
                 need_update = 1;
             }
             break;
@@ -68,9 +76,6 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                 state->slow_init_started = 1;
                 k_timer_start(&state->timer_slow_init, K_NO_WAIT, K_MSEC(200));
             } else if (state->tx_counter == 11) {
-                // some MCUs do not support 7 data bits, so always use 8 data bits and handle the parity bit in this module
-                kw1281_uart_configure(state, UART_CFG_DATA_BITS_8, UART_CFG_PARITY_NONE);
-
                 k_timer_start(&state->timer_rx, K_NO_WAIT, K_MSEC(state->cfg.inter_byte_time_ms/5));
                 state->rx_enabled = 1;
 
@@ -148,6 +153,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
             case KW1281_PROTOCOL_STATE_CONNECT_SYNC:
                 if (state->rx_data == 0x55) {
+                    state->key_word_parity_error = 0;
                     state->ack = 0;
                     state->rx_counter = 0;
                     new_state = KW1281_PROTOCOL_STATE_CONNECT_KEY_WORD;
@@ -159,7 +165,14 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
             case KW1281_PROTOCOL_STATE_CONNECT_KEY_WORD:
                 if (!state->ack) {
-                    // TODO: check parity bit
+                    uint8_t parity = state->rx_data;
+                    parity = parity | (parity>>4);
+                    parity = parity | (parity>>2);
+                    parity = parity | (parity>>1);
+
+                    if ((parity & 1) != 1) {
+                        state->key_word_parity_error = 1;
+                    }
 
                     if (state->rx_counter == 0) {
                         state->key_word = state->rx_data & 0x7F;
@@ -169,17 +182,26 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                     state->rx_counter++;
                     if (state->rx_counter == 2) {
-                        state->ack = 1;
+                        if (!state->key_word_parity_error) {
+                            state->ack = 1;
 
-                        ack_delay_ms = state->cfg.key_word_ack_delay_ms;
-                        send_ack = 1;
+                            ack_delay_ms = state->cfg.key_word_ack_delay_ms;
+                            send_ack = 1;
+                        } else {
+                            new_state = KW1281_PROTOCOL_STATE_CONNECT_SYNC;
+                        }
                     }
                 } else {
                     if (!state->tx_data_valid && state->rx_data == state->tx_data) {
-                        // TODO: verify key_word
+                        if (state->key_word == KW1281_KEY_WORD) {
+                            state->ack = 0;
+                            new_state = KW1281_PROTOCOL_STATE_RX_LEN;
 
-                        state->ack = 0;
-                        new_state = KW1281_PROTOCOL_STATE_RX_LEN;
+                            k_condvar_signal(&state->condvar_connect);
+                        } else {
+                            state->error = KW1281_ERROR_CONNECT_INVALID_KEY_WORD;
+                            error = 1;
+                        }
                     } else {
                         state->error = KW1281_ERROR_COLLISION;
                         error = 1;
@@ -192,12 +214,15 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                 if (!state->rx_block_valid) {
                     if (!state->ack) {
                         if (state->rx_data >= 3) {
+                            state->rx_block_started = 1;
                             state->rx_block.length = state->rx_data;
 
                             state->ack = 1;
 
                             ack_delay_ms = state->cfg.inter_byte_time_ms;
                             send_ack = 1;
+
+                            k_condvar_signal(&state->condvar_rx_block_started);
                         } else {
                             state->error = KW1281_ERROR_RECEIVE_BLOCK_INVALID_LENGTH;
                             error = 1;
@@ -253,13 +278,13 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                 } else {
                     if (state->rx_data == state->tx_data) {
                         if (state->rx_block.length > 3) {
+                            state->ack = 0;
                             state->rx_counter = 0;
-                            new_state = KW1281_PROTOCOL_STATE_RX_TITLE;
+                            new_state = KW1281_PROTOCOL_STATE_RX_DATA;
                         } else {
                             new_state = KW1281_PROTOCOL_STATE_RX_END;
                         }
                     } else {
-                        printk(">>> collision: %02x %02x\n", state->rx_data, state->tx_data);
                         state->error = KW1281_ERROR_COLLISION;
                         error = 1;
                     }
@@ -295,6 +320,8 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                     new_state = KW1281_PROTOCOL_STATE_TX_WAIT;
                     need_update = 1;
+
+                    k_condvar_signal(&state->condvar_rx_block);
                 } else {
                     state->error = KW1281_ERROR_COLLISION;
                     error = 1;
@@ -334,6 +361,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                                     state->ack = 0;
                                     new_state = KW1281_PROTOCOL_STATE_TX_DATA;
                                 } else {
+                                    state->tx_counter = 0;
                                     new_state = KW1281_PROTOCOL_STATE_TX_END;
                                 }
                                 break;
@@ -351,6 +379,8 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                                 // ignore
                                 break;
                         }
+
+                        need_update = 1;
                     } else {
                         state->error = KW1281_ERROR_TRANSMIT_INVALID_ACK;
                         error = 1;
@@ -371,8 +401,10 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                     state->ack = 0;
                     new_state = KW1281_PROTOCOL_STATE_RX_LEN;
+
+                    k_condvar_signal(&state->condvar_tx_block);
                 } else {
-                    state->error = KW1281_ERROR_RECEIVE_BLOCK_INVALID_END;
+                    state->error = KW1281_ERROR_COLLISION;
                     error = 1;
                 }
                 break;
@@ -387,14 +419,14 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
 
     if (error) {
-        printk("> error: %d\n", state->error);
+        //printk("> error: %d\n", state->error);
         state->disconnect_request = 1;
         new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
         need_update = 1;
     }
 
 
-    printk("> update state: state=%d, new_state=%d\n", state->protocol_state, new_state);
+    //printk("> update state: state=%d, new_state=%d\n", state->protocol_state, new_state);
     state->protocol_state = new_state;
 
     return need_update;
@@ -421,15 +453,17 @@ static void kw1281_rx (struct k_timer *timer) {
     struct kw1281_state *state = k_timer_user_data_get(timer);
     k_mutex_lock(&state->mutex, K_FOREVER);
 
-    if (!state->rx_data_valid) {
-        if (uart_poll_in(state->cfg.uart_dev, &state->rx_data) == 0) {
-            state->rx_data_valid = 1;
+    if (state->rx_enabled) {
+        if (!state->rx_data_valid) {
+            if (uart_poll_in(state->cfg.uart_dev, &state->rx_data) == 0) {
+                state->rx_data_valid = 1;
+                kw1281_update(state);
+            }
+        } else {
+            state->error = KW1281_ERROR_OVERRUN;
+            state->disconnect_request = 1;
             kw1281_update(state);
         }
-    } else {
-        state->error = KW1281_ERROR_OVERRUN;
-        state->disconnect_request = 1;
-        kw1281_update(state);
     }
 
     k_mutex_unlock(&state->mutex);
@@ -462,25 +496,53 @@ static void kw1281_slow_init_tx (struct k_timer *timer) {
 }
 
 
-void kw1281_init (struct kw1281_state *state, const struct kw1281_config *config) {
+uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *config) {
     memcpy(&state->cfg, config, sizeof(struct kw1281_config));
 
-    k_mutex_init(&state->mutex);
+    if (k_mutex_init(&state->mutex) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
+    if (k_condvar_init(&state->condvar_connect) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
+    if (k_condvar_init(&state->condvar_rx_block) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
+    if (k_condvar_init(&state->condvar_rx_block_started) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
+    if (k_condvar_init(&state->condvar_tx_block) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
 
     state->uart_cfg.baudrate = state->cfg.baudrate;
     state->uart_cfg.stop_bits = UART_CFG_STOP_BITS_1;
     state->uart_cfg.flow_ctrl = UART_CFG_FLOW_CTRL_NONE;
 
     state->protocol_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
+    state->key_word_parity_error = 0;
     state->rx_data_valid = 0;
     state->tx_data_valid = 0;
     state->rx_block_valid = 0;
+    state->rx_block_started = 0;
     state->tx_block_valid = 0;
     state->connect_request = 0;
     state->disconnect_request = 0;
     state->rx_enabled = 0;
 
-    gpio_pin_configure(state->cfg.slow_init_dev, state->cfg.slow_init_pin, GPIO_OUTPUT_HIGH);
+    if (gpio_pin_configure(state->cfg.slow_init_dev, state->cfg.slow_init_pin, GPIO_OUTPUT_HIGH) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
 
     k_timer_init(&state->timer_slow_init, kw1281_slow_init_tx, NULL);
     k_timer_user_data_set(&state->timer_slow_init, state);
@@ -490,9 +552,11 @@ void kw1281_init (struct kw1281_state *state, const struct kw1281_config *config
 
     k_timer_init(&state->timer_rx, kw1281_rx, NULL);
     k_timer_user_data_set(&state->timer_rx, state);
+
+    return 1;
 }
 
-uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr) {
+uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     if (state->protocol_state != KW1281_PROTOCOL_STATE_DISCONNECTED) {
@@ -506,15 +570,34 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr) {
 
     kw1281_update(state);
 
+    if (wait) {
+        if (k_condvar_wait(&state->condvar_connect, &state->mutex, K_MSEC(state->cfg.timeout_connect_ms)) < 0) {
+            state->error = KW1281_ERROR_CONNECT_TIMEOUT;
+
+            k_mutex_unlock(&state->mutex);
+            return 0;
+        }
+    }
+
     k_mutex_unlock(&state->mutex);
     return 1;
 }
 
-uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block *block) {
+uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block *block, uint8_t wait) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
-    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || state->tx_block_valid || block->length < 3) {
+    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || block->length < 3) {
+        k_mutex_unlock(&state->mutex);
         return 0;
+    }
+
+    if (state->tx_block_valid) {
+        if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_transmit_block_ongoing_tx_ms))) {
+            state->error = KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT;
+
+            k_mutex_unlock(&state->mutex);
+            return 0;
+        }
     }
 
     state->tx_block = *block;
@@ -523,6 +606,15 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
 
     kw1281_update(state);
 
+    if (wait && state->tx_block_valid) {
+        if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_transmit_block_tx_ms))) {
+            state->error = KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT;
+
+            k_mutex_unlock(&state->mutex);
+            return 0;
+        }
+    }
+
     k_mutex_unlock(&state->mutex);
     return 1;
 }
@@ -530,12 +622,46 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
 uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *block) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
-    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || !state->rx_block_valid) {
+    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED) {
+        k_mutex_unlock(&state->mutex);
         return 0;
+    }
+
+    if (!state->rx_block_valid) {
+        if (state->tx_block_valid) {
+            // no block received and currently transmitting a block -> wait until transmission is done
+            if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_ongoing_tx_ms)) < 0) {
+                state->error = KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT;
+
+                k_mutex_unlock(&state->mutex);
+                return 0;
+            }
+        }
+
+        // now we must receive a block
+
+        if (!state->rx_block_started) {
+            if (k_condvar_wait(&state->condvar_rx_block_started, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_rx_start_ms)) < 0) {
+                state->error = KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT;
+
+                k_mutex_unlock(&state->mutex);
+                return 0;
+            }
+        }
+
+        if (!state->rx_block_valid) {
+            if (k_condvar_wait(&state->condvar_rx_block, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_rx_ms)) < 0) {
+                state->error = KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT;
+
+                k_mutex_unlock(&state->mutex);
+                return 0;
+            }
+        }
     }
 
     *block = state->rx_block;
     state->rx_block_valid = 0;
+    state->rx_block_started = 0;
 
     k_mutex_unlock(&state->mutex);
     return 1;
@@ -543,7 +669,10 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
 
 void kw1281_disconnect (struct kw1281_state *state) {
     k_mutex_lock(&state->mutex, K_FOREVER);
+
     state->disconnect_request = 1;
+    kw1281_update(state);
+
     k_mutex_unlock(&state->mutex);
 }
 
@@ -575,17 +704,11 @@ const char * kw1281_get_error_msg (struct kw1281_state *state) {
         case KW1281_ERROR_CONNECT_NO_SYNC:
             return "cannot not sync baudrate";
 
+        case KW1281_ERROR_CONNECT_INVALID_KEY_WORD:
+            return "received key word is invalid";
+
         case KW1281_ERROR_UART_CONFIG:
             return "wrong uart configuration";
-
-        case KW1281_ERROR_SEND_NO_ACK:
-            return "no or invalid ack received";
-
-        case KW1281_ERROR_RECEIVE_BYTE_UNKNOWN:
-            return "unknown error while receiving a byte";
-
-        case KW1281_ERROR_RECEIVE_BYTE_TIMEOUT:
-            return "timeout while receiving a byte";
 
         case KW1281_ERROR_RECEIVE_BLOCK_INVALID_LENGTH:
             return "length of the received block is invalid";
@@ -593,14 +716,20 @@ const char * kw1281_get_error_msg (struct kw1281_state *state) {
         case KW1281_ERROR_RECEIVE_BLOCK_INVALID_COUNTER:
             return "counter of the received block is invalid";
 
-        case KW1281_ERROR_RECEIVE_BLOCK_INVALID_END:
-            return "end of the received block is invalid";
-
         case KW1281_ERROR_TRANSMIT_INVALID_ACK:
             return "invalid ack received";
 
         case KW1281_ERROR_OVERRUN:
             return "receive buffer overrun";
+
+        case KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT:
+            return "receive block timeout";
+
+        case KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT:
+            return "transmit block timeout";
+
+        case KW1281_ERROR_CONNECT_TIMEOUT:
+            return "connect timeout";
 
 
         case KW1281_ERROR_UNKNOWN:
