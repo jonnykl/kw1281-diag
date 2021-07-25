@@ -28,6 +28,10 @@
 #include "kw1281.h"
 
 
+#define ASYNC_ERROR_HANDLER_THREAD_STACK_SIZE       512
+#define ASYNC_ERROR_HANDLER_THREAD_PRIO             5
+#define ASYNC_ERROR_MSGQ_LENGTH                     16
+
 #define STATE_MUTEX_LOCK_TIMEOUT_MS         500
 #define KEEP_ALIVE_INTERVAL_MS              50
 
@@ -55,9 +59,15 @@ static void keep_alive_thread(void *arg0, void *arg1, void *arg2);
 
 static int init = 0;
 static struct kw1281_state state;
-K_MUTEX_DEFINE(state_mutex);
+static K_MUTEX_DEFINE(state_mutex);
 
-K_THREAD_DEFINE(keep_alive_tid, 1024, keep_alive_thread, NULL, NULL, NULL, 5, 0, 0);
+static K_THREAD_DEFINE(keep_alive_tid, 1024, keep_alive_thread, NULL, NULL, NULL, 5, 0, 0);
+
+static struct k_thread async_error_handler_data;
+static K_THREAD_STACK_DEFINE(async_error_handler_stack, ASYNC_ERROR_HANDLER_THREAD_STACK_SIZE);
+
+static char __aligned(4) async_error_msgq_buffer[ASYNC_ERROR_MSGQ_LENGTH * sizeof(struct kw1281_async_error)];
+static struct k_msgq async_error_msgq;
 
 
 static const struct kw1281_block ack_block = {
@@ -1138,9 +1148,36 @@ static void keep_alive_thread (void *arg0, void *arg1, void *arg2) {
     }
 }
 
+static void async_error_handler_thread (void *arg0, void *arg1, void *arg2) {
+    struct kw1281_async_error async_error;
+
+    for (;;) {
+        k_msgq_get(&async_error_msgq, &async_error, K_FOREVER);
+        shell_error(shell_backend_uart_get_ptr(), "async error: %s", kw1281_get_async_error_type_msg(async_error.type));
+    }
+}
+
+
+// state_mutex may be locked here so we must not try to lock it
+// may be called from an ISR context
+static void async_error_callback (const struct kw1281_state *state, struct kw1281_async_error *async_error) {
+    int ret;
+
+    ret = k_msgq_put(&async_error_msgq, async_error, K_NO_WAIT);
+    if (ret != 0) {
+        k_oops();
+    }
+}
+
 
 
 void main (void) {
+    k_msgq_init(&async_error_msgq, async_error_msgq_buffer, sizeof(struct kw1281_async_error), ASYNC_ERROR_MSGQ_LENGTH);
+
+    k_thread_create(&async_error_handler_data, async_error_handler_stack, ASYNC_ERROR_HANDLER_THREAD_STACK_SIZE,
+            async_error_handler_thread, NULL, NULL, NULL, ASYNC_ERROR_HANDLER_THREAD_PRIO, 0, K_NO_WAIT);
+
+
     struct kw1281_config config = {
         .baudrate = 10400,
         .inter_byte_time_ms = 10,
@@ -1157,7 +1194,9 @@ void main (void) {
 
         .uart_dev = device_get_binding(DT_LABEL(DT_NODELABEL(usart2))),
         .slow_init_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioa))),
-        .slow_init_pin = 1
+        .slow_init_pin = 1,
+
+        .async_error_callback = &async_error_callback,
     };
 
     kw1281_init(&state, &config);

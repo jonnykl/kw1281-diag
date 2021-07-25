@@ -36,17 +36,22 @@
 
 enum kw1281_error {
     KW1281_ERROR_UNKNOWN,
-    KW1281_ERROR_COLLISION,
-    KW1281_ERROR_CONNECT_NO_SYNC,
-    KW1281_ERROR_CONNECT_INVALID_KEY_WORD,
-    KW1281_ERROR_UART_CONFIG,
-    KW1281_ERROR_RECEIVE_BLOCK_INVALID_LENGTH,
-    KW1281_ERROR_RECEIVE_BLOCK_INVALID_COUNTER,
-    KW1281_ERROR_TRANSMIT_INVALID_ACK,
-    KW1281_ERROR_OVERRUN,
+    KW1281_ERROR_NOT_CONNECTED,
+    KW1281_ERROR_CONNECT_TIMEOUT,
     KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT,
     KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT,
-    KW1281_ERROR_CONNECT_TIMEOUT
+};
+
+enum kw1281_async_error_type {
+    KW1281_ASYNC_ERROR_UNKNOWN,
+    KW1281_ASYNC_ERROR_COLLISION,
+    KW1281_ASYNC_ERROR_CONNECT_NO_SYNC,
+    KW1281_ASYNC_ERROR_CONNECT_INVALID_KEY_WORD,
+    KW1281_ASYNC_ERROR_UART_CONFIG,
+    KW1281_ASYNC_ERROR_RECEIVE_BLOCK_INVALID_LENGTH,
+    KW1281_ASYNC_ERROR_RECEIVE_BLOCK_INVALID_COUNTER,
+    KW1281_ASYNC_ERROR_TRANSMIT_INVALID_ACK,
+    KW1281_ASYNC_ERROR_OVERRUN,
 };
 
 enum kw1281_protocol_state {
@@ -65,9 +70,19 @@ enum kw1281_protocol_state {
     KW1281_PROTOCOL_STATE_TX_COUNTER,
     KW1281_PROTOCOL_STATE_TX_TITLE,
     KW1281_PROTOCOL_STATE_TX_DATA,
-    KW1281_PROTOCOL_STATE_TX_END
+    KW1281_PROTOCOL_STATE_TX_END,
 };
 
+
+struct kw1281_state;
+struct kw1281_async_error;
+
+typedef void (*kw1281_async_error_callback_t)(const struct kw1281_state *state, struct kw1281_async_error *async_error);
+
+
+struct kw1281_async_error {
+    enum kw1281_async_error_type type;
+};
 
 struct kw1281_block {
     uint8_t length;
@@ -94,6 +109,8 @@ struct kw1281_config {
     const struct device *uart_dev;
     const struct device *slow_init_dev;
     int slow_init_pin;
+
+    kw1281_async_error_callback_t async_error_callback;
 };
 
 struct kw1281_state {
@@ -153,6 +170,7 @@ void kw1281_disconnect(struct kw1281_state *state);
 uint8_t kw1281_is_disconnected(struct kw1281_state *state);
 enum kw1281_error kw1281_get_error(struct kw1281_state *state);
 const char * kw1281_get_error_msg(struct kw1281_state *state);
+const char * kw1281_get_async_error_type_msg(enum kw1281_async_error_type async_error_type);
 
 
 #endif /* KW1281_H */

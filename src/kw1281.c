@@ -22,6 +22,16 @@
 #include "kw1281.h"
 
 
+static void kw1281_dispatch_async_error (struct kw1281_state *state, enum kw1281_async_error_type type) {
+    if (state->cfg.async_error_callback != NULL) {
+        struct kw1281_async_error async_error = {
+            .type = type
+        };
+
+        state->cfg.async_error_callback(state, &async_error);
+    }
+}
+
 // state mutex must be locked when calling this function
 static void kw1281_uart_tx (struct kw1281_state *state, uint8_t data, k_timeout_t delay) {
     state->tx_data = data;
@@ -37,7 +47,7 @@ static uint8_t kw1281_uart_configure (struct kw1281_state *state, uint8_t data_b
     state->uart_cfg.parity = parity;
 
     if (uart_configure(state->cfg.uart_dev, &state->uart_cfg) < 0) {
-        state->error = KW1281_ERROR_UART_CONFIG;
+        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_UART_CONFIG);
         return 0;
     }
 
@@ -183,7 +193,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                     state->rx_counter = 0;
                     new_state = KW1281_PROTOCOL_STATE_CONNECT_KEY_WORD;
                 } else {
-                    state->error = KW1281_ERROR_CONNECT_NO_SYNC;
+                    kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_CONNECT_NO_SYNC);
                     error = 1;
                 }
                 break;
@@ -224,11 +234,11 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                             k_condvar_signal(&state->condvar_connect);
                         } else {
-                            state->error = KW1281_ERROR_CONNECT_INVALID_KEY_WORD;
+                            kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_CONNECT_INVALID_KEY_WORD);
                             error = 1;
                         }
                     } else {
-                        state->error = KW1281_ERROR_COLLISION;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                         error = 1;
                     }
                 }
@@ -249,7 +259,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                             k_condvar_signal(&state->condvar_rx_block_started);
                         } else {
-                            state->error = KW1281_ERROR_RECEIVE_BLOCK_INVALID_LENGTH;
+                            kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_RECEIVE_BLOCK_INVALID_LENGTH);
                             error = 1;
                         }
                     } else {
@@ -257,7 +267,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                             state->ack = 0;
                             new_state = KW1281_PROTOCOL_STATE_RX_COUNTER;
                         } else {
-                            state->error = KW1281_ERROR_COLLISION;
+                            kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                             error = 1;
                         }
                     }
@@ -266,7 +276,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                     // are sent/received alternatingly -> before every transmission of
                     // a block the received block should be read
 
-                    state->error = KW1281_ERROR_OVERRUN;
+                    kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_OVERRUN);
                     error = 1;
                 }
                 break;
@@ -282,7 +292,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                         ack_delay_ms = state->cfg.inter_byte_time_ms;
                         send_ack = 1;
                     } else {
-                        state->error = KW1281_ERROR_RECEIVE_BLOCK_INVALID_COUNTER;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_RECEIVE_BLOCK_INVALID_COUNTER);
                         error = 1;
                     }
                 } else {
@@ -290,7 +300,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                         state->ack = 0;
                         new_state = KW1281_PROTOCOL_STATE_RX_TITLE;
                     } else {
-                        state->error = KW1281_ERROR_COLLISION;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                         error = 1;
                     }
                 }
@@ -313,7 +323,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                             new_state = KW1281_PROTOCOL_STATE_RX_END;
                         }
                     } else {
-                        state->error = KW1281_ERROR_COLLISION;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                         error = 1;
                     }
                 }
@@ -336,7 +346,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                             state->ack = 0;
                         }
                     } else {
-                        state->error = KW1281_ERROR_COLLISION;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                         error = 1;
                     }
                 }
@@ -351,14 +361,14 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                     k_condvar_signal(&state->condvar_rx_block);
                 } else {
-                    state->error = KW1281_ERROR_COLLISION;
+                    kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                     error = 1;
                 }
                 break;
 
 
             case KW1281_PROTOCOL_STATE_TX_WAIT:
-                state->error = KW1281_ERROR_UNKNOWN;
+                kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_UNKNOWN);
                 error = 1;
                 break;
 
@@ -410,14 +420,14 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                         need_update = 1;
                     } else {
-                        state->error = KW1281_ERROR_TRANSMIT_INVALID_ACK;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_TRANSMIT_INVALID_ACK);
                         error = 1;
                     }
                 } else {
                     if (!state->tx_data_valid && state->rx_data == state->tx_data) {
                         state->ack = 1;
                     } else {
-                        state->error = KW1281_ERROR_COLLISION;
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                         error = 1;
                     }
                 }
@@ -432,7 +442,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
                     k_condvar_signal(&state->condvar_tx_block);
                 } else {
-                    state->error = KW1281_ERROR_COLLISION;
+                    kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_COLLISION);
                     error = 1;
                 }
                 break;
@@ -447,7 +457,6 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
 
     if (error) {
-        //printk("> error: %d\n", state->error);
         new_state = KW1281_PROTOCOL_STATE_DISCONNECT_REQUEST;
         need_update = 1;
     }
@@ -487,7 +496,7 @@ static void kw1281_rx (struct k_timer *timer) {
                 kw1281_update(state);
             }
         } else {
-            state->error = KW1281_ERROR_OVERRUN;
+            kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_OVERRUN);
             state->disconnect_request = 1;
             kw1281_update(state);
         }
@@ -587,6 +596,8 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) 
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     if (state->protocol_state != KW1281_PROTOCOL_STATE_DISCONNECTED) {
+        state->error = KW1281_ERROR_NOT_CONNECTED;
+
         k_mutex_unlock(&state->mutex);
         return 0;
     }
@@ -615,6 +626,8 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || block->length < 3) {
+        state->error = KW1281_ERROR_NOT_CONNECTED;
+
         k_mutex_unlock(&state->mutex);
         return 0;
     }
@@ -651,6 +664,8 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED) {
+        state->error = KW1281_ERROR_NOT_CONNECTED;
+
         k_mutex_unlock(&state->mutex);
         return 0;
     }
@@ -726,29 +741,11 @@ enum kw1281_error kw1281_get_error (struct kw1281_state *state) {
 
 const char * kw1281_get_error_msg (struct kw1281_state *state) {
     switch (kw1281_get_error(state)) {
-        case KW1281_ERROR_COLLISION:
-            return "received data did not match sent data";
+        case KW1281_ERROR_NOT_CONNECTED:
+            return "not connected";
 
-        case KW1281_ERROR_CONNECT_NO_SYNC:
-            return "cannot not sync baudrate";
-
-        case KW1281_ERROR_CONNECT_INVALID_KEY_WORD:
-            return "received key word is invalid";
-
-        case KW1281_ERROR_UART_CONFIG:
-            return "wrong uart configuration";
-
-        case KW1281_ERROR_RECEIVE_BLOCK_INVALID_LENGTH:
-            return "length of the received block is invalid";
-
-        case KW1281_ERROR_RECEIVE_BLOCK_INVALID_COUNTER:
-            return "counter of the received block is invalid";
-
-        case KW1281_ERROR_TRANSMIT_INVALID_ACK:
-            return "invalid ack received";
-
-        case KW1281_ERROR_OVERRUN:
-            return "receive buffer overrun";
+        case KW1281_ERROR_CONNECT_TIMEOUT:
+            return "connect timeout";
 
         case KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT:
             return "receive block timeout";
@@ -756,11 +753,41 @@ const char * kw1281_get_error_msg (struct kw1281_state *state) {
         case KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT:
             return "transmit block timeout";
 
-        case KW1281_ERROR_CONNECT_TIMEOUT:
-            return "connect timeout";
-
 
         case KW1281_ERROR_UNKNOWN:
+        default:
+            return "unknown";
+    }
+}
+
+const char * kw1281_get_async_error_type_msg (enum kw1281_async_error_type async_error_type) {
+    switch (async_error_type) {
+        case KW1281_ASYNC_ERROR_COLLISION:
+            return "received data did not match sent data";
+
+        case KW1281_ASYNC_ERROR_CONNECT_NO_SYNC:
+            return "cannot not sync baudrate";
+
+        case KW1281_ASYNC_ERROR_CONNECT_INVALID_KEY_WORD:
+            return "received key word is invalid";
+
+        case KW1281_ASYNC_ERROR_UART_CONFIG:
+            return "wrong uart configuration";
+
+        case KW1281_ASYNC_ERROR_RECEIVE_BLOCK_INVALID_LENGTH:
+            return "length of the received block is invalid";
+
+        case KW1281_ASYNC_ERROR_RECEIVE_BLOCK_INVALID_COUNTER:
+            return "counter of the received block is invalid";
+
+        case KW1281_ASYNC_ERROR_TRANSMIT_INVALID_ACK:
+            return "invalid ack received";
+
+        case KW1281_ASYNC_ERROR_OVERRUN:
+            return "receive buffer overrun";
+
+
+        case KW1281_ASYNC_ERROR_UNKNOWN:
         default:
             return "unknown";
     }
