@@ -237,7 +237,10 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                         }
                     }
                 } else {
-                    // TODO: buffer
+                    // should never happen if this libaries is used correctly as blocks
+                    // are sent/received alternatingly -> before every transmission of
+                    // a block the received block should be read
+
                     state->error = KW1281_ERROR_OVERRUN;
                     error = 1;
                 }
