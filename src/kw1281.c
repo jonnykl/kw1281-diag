@@ -74,12 +74,22 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
             state->rx_enabled = 0;
         }
 
+        k_mutex_lock(&state->dummy_mutex, K_NO_WAIT);
+        k_condvar_wait(&state->condvar_connect, &state->dummy_mutex, K_NO_WAIT);
+        k_condvar_wait(&state->condvar_rx_block, &state->dummy_mutex, K_NO_WAIT);
+        k_condvar_wait(&state->condvar_rx_block_started, &state->dummy_mutex, K_NO_WAIT);
+        k_condvar_wait(&state->condvar_tx_block, &state->dummy_mutex, K_NO_WAIT);
+        k_mutex_unlock(&state->dummy_mutex);
+
         state->key_word_parity_error = 0;
         state->rx_data_valid = 0;
         state->tx_data_valid = 0;
         state->rx_block_valid = 0;
         state->rx_block_started = 0;
         state->tx_block_valid = 0;
+
+        k_timer_stop(&state->timer_slow_init);
+        k_timer_stop(&state->timer_tx);
 
         new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
         state->protocol_state = new_state;
@@ -540,6 +550,11 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
         return 0;
     }
 
+    if (k_mutex_init(&state->dummy_mutex) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
     if (k_condvar_init(&state->condvar_connect) < 0) {
         state->error = KW1281_ERROR_UNKNOWN;
         return 0;
@@ -611,6 +626,9 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) 
 
     if (wait) {
         if (k_condvar_wait(&state->condvar_connect, &state->mutex, K_MSEC(state->cfg.timeout_connect_ms)) < 0) {
+            state->disconnect_request = 1;
+            kw1281_update(state);
+
             state->error = KW1281_ERROR_CONNECT_TIMEOUT;
 
             k_mutex_unlock(&state->mutex);
@@ -625,8 +643,15 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) 
 uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block *block, uint8_t wait) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
-    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED || block->length < 3) {
+    if (state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECTED) {
         state->error = KW1281_ERROR_NOT_CONNECTED;
+
+        k_mutex_unlock(&state->mutex);
+        return 0;
+    }
+
+    if (block->length < 3) {
+        state->error = KW1281_ERROR_INVALID_ARGUMENT;
 
         k_mutex_unlock(&state->mutex);
         return 0;
@@ -634,6 +659,9 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
 
     if (state->tx_block_valid) {
         if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_transmit_block_ongoing_tx_ms))) {
+            state->disconnect_request = 1;
+            kw1281_update(state);
+
             state->error = KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT;
 
             k_mutex_unlock(&state->mutex);
@@ -649,6 +677,9 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
 
     if (wait && state->tx_block_valid) {
         if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_transmit_block_tx_ms))) {
+            state->disconnect_request = 1;
+            kw1281_update(state);
+
             state->error = KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT;
 
             k_mutex_unlock(&state->mutex);
@@ -685,6 +716,9 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
 
         if (!state->rx_block_started) {
             if (k_condvar_wait(&state->condvar_rx_block_started, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_rx_start_ms)) < 0) {
+                state->disconnect_request = 1;
+                kw1281_update(state);
+
                 state->error = KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT;
 
                 k_mutex_unlock(&state->mutex);
@@ -694,6 +728,9 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
 
         if (!state->rx_block_valid) {
             if (k_condvar_wait(&state->condvar_rx_block, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_rx_ms)) < 0) {
+                state->disconnect_request = 1;
+                kw1281_update(state);
+
                 state->error = KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT;
 
                 k_mutex_unlock(&state->mutex);
@@ -743,6 +780,9 @@ const char * kw1281_get_error_msg (struct kw1281_state *state) {
     switch (kw1281_get_error(state)) {
         case KW1281_ERROR_NOT_CONNECTED:
             return "not connected";
+
+        case KW1281_ERROR_INVALID_ARGUMENT:
+            return "invalid argument";
 
         case KW1281_ERROR_CONNECT_TIMEOUT:
             return "connect timeout";

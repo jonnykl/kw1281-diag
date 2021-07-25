@@ -37,6 +37,7 @@
 enum kw1281_error {
     KW1281_ERROR_UNKNOWN,
     KW1281_ERROR_NOT_CONNECTED,
+    KW1281_ERROR_INVALID_ARGUMENT,
     KW1281_ERROR_CONNECT_TIMEOUT,
     KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT,
     KW1281_ERROR_TRANSMIT_BLOCK_TIMEOUT,
@@ -116,6 +117,7 @@ struct kw1281_config {
 struct kw1281_state {
     // kernel objects
     struct k_mutex mutex;
+    struct k_mutex dummy_mutex;
     struct k_condvar condvar_connect;
     struct k_condvar condvar_rx_block;
     struct k_condvar condvar_rx_block_started;
