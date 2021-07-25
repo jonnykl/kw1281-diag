@@ -740,6 +740,25 @@ static int read_group (const struct shell *shell, uint8_t channel, uint8_t adapt
 
 
 static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
+    char *end = NULL;
+    int start_address;
+    int end_address;
+
+    start_address = strtoul(argv[1], &end, 16);
+
+    if (*end != '\0' || end == argv[1] || start_address < 0x00 || start_address > 0xff) {
+        shell_error(shell, "error: invalid start address");
+        return 1;
+    }
+
+    end_address = strtoul(argv[2], &end, 16);
+
+    if (*end != '\0' || end == argv[1] || end_address < 0x00 || end_address > 0xff || end_address < start_address) {
+        shell_error(shell, "error: invalid end address");
+        return 1;
+    }
+
+
     if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
         shell_error(shell, "error: cannot lock state");
         return 1;
@@ -756,7 +775,7 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
 
     struct kw1281_block block;
 
-    for (unsigned int address=1; address<=0xff; address++) {
+    for (unsigned int address=start_address; address<=end_address; address++) {
         k_msleep(100);
 
 
@@ -1207,7 +1226,7 @@ void main (void) {
 
 
 
-SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for targets", cmd_scan, 0, 0);
+SHELL_CMD_ARG_REGISTER(scan, NULL, "Scan for targets", cmd_scan, 3, 0);
 SHELL_CMD_ARG_REGISTER(connect, NULL, "Connect to target", cmd_connect, 2, 0);
 SHELL_CMD_ARG_REGISTER(read_fault_codes, NULL, "Read fault codes", cmd_read_fault_codes, 1, 0);
 SHELL_CMD_ARG_REGISTER(clear_fault_codes, NULL, "Clear fault codes", cmd_clear_fault_codes, 1, 0);
