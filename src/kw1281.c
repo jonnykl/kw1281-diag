@@ -88,7 +88,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
         state->rx_block_started = 0;
         state->tx_block_valid = 0;
 
-        k_timer_stop(&state->timer_slow_init);
+        k_timer_stop(&state->timer_slow_init_tx);
         k_timer_stop(&state->timer_tx);
 
         new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
@@ -118,7 +118,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
         case KW1281_PROTOCOL_STATE_CONNECT_ADDR:
             if (!state->slow_init_started) {
                 state->slow_init_started = 1;
-                k_timer_start(&state->timer_slow_init, K_NO_WAIT, K_MSEC(200));
+                k_timer_start(&state->timer_slow_init_tx, K_NO_WAIT, K_MSEC(200));
             } else if (state->tx_counter == 11) {
                 k_timer_start(&state->timer_rx, K_NO_WAIT, K_MSEC(state->cfg.inter_byte_time_ms/5));
                 state->rx_enabled = 1;
@@ -484,8 +484,34 @@ static void kw1281_update (struct kw1281_state *state) {
 }
 
 
-static void kw1281_tx (struct k_timer *timer) {
-    struct kw1281_state *state = k_timer_user_data_get(timer);
+static void kw1281_slow_init_tx (struct k_work *work) {
+    struct kw1281_state *state = CONTAINER_OF(work, struct kw1281_state, work_timer_slow_init_tx);
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    uint8_t bit = state->tx_counter;
+
+    if (bit == 0) {
+        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, 0);
+    } else if (bit == 9) {
+        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, 1);
+    } else if (bit == 10) {
+        k_timer_stop(&state->timer_slow_init_tx);
+    } else {
+        uint8_t data_bit = (state->address >> (bit-1)) & 1;
+        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, data_bit);
+
+        // calculate parity
+        state->address ^= data_bit<<7;
+    }
+
+    state->tx_counter++;
+    kw1281_update(state);
+
+    k_mutex_unlock(&state->mutex);
+}
+
+static void kw1281_tx (struct k_work *work) {
+    struct kw1281_state *state = CONTAINER_OF(work, struct kw1281_state, work_timer_tx);
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     uart_poll_out(state->cfg.uart_dev, state->tx_data);
@@ -495,8 +521,8 @@ static void kw1281_tx (struct k_timer *timer) {
     k_mutex_unlock(&state->mutex);
 }
 
-static void kw1281_rx (struct k_timer *timer) {
-    struct kw1281_state *state = k_timer_user_data_get(timer);
+static void kw1281_rx (struct k_work *work) {
+    struct kw1281_state *state = CONTAINER_OF(work, struct kw1281_state, work_timer_rx);
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     if (state->rx_enabled) {
@@ -515,30 +541,20 @@ static void kw1281_rx (struct k_timer *timer) {
     k_mutex_unlock(&state->mutex);
 }
 
-static void kw1281_slow_init_tx (struct k_timer *timer) {
+
+static void kw1281_timer_slow_init_tx_handler (struct k_timer *timer) {
     struct kw1281_state *state = k_timer_user_data_get(timer);
-    k_mutex_lock(&state->mutex, K_FOREVER);
+    k_work_submit(&state->work_timer_slow_init_tx);
+}
 
-    uint8_t bit = state->tx_counter;
+static void kw1281_timer_tx_handler (struct k_timer *timer) {
+    struct kw1281_state *state = k_timer_user_data_get(timer);
+    k_work_submit(&state->work_timer_tx);
+}
 
-    if (bit == 0) {
-        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, 0);
-    } else if (bit == 9) {
-        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, 1);
-    } else if (bit == 10) {
-        k_timer_stop(timer);
-    } else {
-        uint8_t data_bit = (state->address >> (bit-1)) & 1;
-        gpio_pin_set(state->cfg.slow_init_dev, state->cfg.slow_init_pin, data_bit);
-
-        // calculate parity
-        state->address ^= data_bit<<7;
-    }
-
-    state->tx_counter++;
-    kw1281_update(state);
-
-    k_mutex_unlock(&state->mutex);
+static void kw1281_timer_rx_handler (struct k_timer *timer) {
+    struct kw1281_state *state = k_timer_user_data_get(timer);
+    k_work_submit(&state->work_timer_rx);
 }
 
 
@@ -595,13 +611,17 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
         return 0;
     }
 
-    k_timer_init(&state->timer_slow_init, kw1281_slow_init_tx, NULL);
-    k_timer_user_data_set(&state->timer_slow_init, state);
+    k_work_init(&state->work_timer_slow_init_tx, kw1281_slow_init_tx);
+    k_work_init(&state->work_timer_tx, kw1281_tx);
+    k_work_init(&state->work_timer_rx, kw1281_rx);
 
-    k_timer_init(&state->timer_tx, kw1281_tx, NULL);
+    k_timer_init(&state->timer_slow_init_tx, kw1281_timer_slow_init_tx_handler, NULL);
+    k_timer_user_data_set(&state->timer_slow_init_tx, state);
+
+    k_timer_init(&state->timer_tx, kw1281_timer_tx_handler, NULL);
     k_timer_user_data_set(&state->timer_tx, state);
 
-    k_timer_init(&state->timer_rx, kw1281_rx, NULL);
+    k_timer_init(&state->timer_rx, kw1281_timer_rx_handler, NULL);
     k_timer_user_data_set(&state->timer_rx, state);
 
     return 1;

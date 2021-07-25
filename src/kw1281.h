@@ -122,7 +122,10 @@ struct kw1281_state {
     struct k_condvar condvar_rx_block;
     struct k_condvar condvar_rx_block_started;
     struct k_condvar condvar_tx_block;
-    struct k_timer timer_slow_init;
+    struct k_work work_timer_slow_init_tx;
+    struct k_work work_timer_tx;
+    struct k_work work_timer_rx;
+    struct k_timer timer_slow_init_tx;
     struct k_timer timer_tx;
     struct k_timer timer_rx;
 
