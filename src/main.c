@@ -838,6 +838,9 @@ static int cmd_scan (const struct shell *shell, size_t argc, char **argv) {
     }
 
 
+    k_mutex_unlock(&state_mutex);
+
+
     shell_print(shell, "scan done!");
 
     return 0;
