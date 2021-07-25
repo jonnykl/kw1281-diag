@@ -1,6 +1,8 @@
 
 # KW1281 diagnosis tool
 
+## Description
+
 Simple KW1281 diagnosis tool for "old" VAG cars implemented using
 [Zephyr](https://docs.zephyrproject.org/latest/index.html) and its
 [shell module](https://docs.zephyrproject.org/latest/reference/shell/index.html).
@@ -12,6 +14,11 @@ Implemented functions/features:
 - read measurement group
 - basic setting (read measurement group with adaption)
 - send raw block
+
+
+## Hardware
+
+TODO
 
 
 # License
