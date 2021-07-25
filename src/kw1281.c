@@ -579,6 +579,7 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) 
     k_mutex_lock(&state->mutex, K_FOREVER);
 
     if (state->protocol_state != KW1281_PROTOCOL_STATE_DISCONNECTED) {
+        k_mutex_unlock(&state->mutex);
         return 0;
     }
 
