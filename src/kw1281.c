@@ -48,20 +48,28 @@ static uint8_t kw1281_uart_configure (struct kw1281_state *state, uint8_t data_b
 }
 
 
-// this function must not be called directly, use kw1281_update instead
+// - this function must not be called directly, use kw1281_update instead
+// - state->protocol_state may only be updated in this function
 static uint8_t kw1281_update_step (struct kw1281_state *state) {
     enum kw1281_protocol_state new_state = state->protocol_state;
     uint8_t need_update = 0;
     uint8_t error = 0;
 
 
-    if (state->disconnect_request) {
+    if (state->disconnect_request || state->protocol_state == KW1281_PROTOCOL_STATE_DISCONNECT_REQUEST) {
         state->disconnect_request = 0;
 
         if (state->rx_enabled) {
             k_timer_stop(&state->timer_rx);
             state->rx_enabled = 0;
         }
+
+        state->key_word_parity_error = 0;
+        state->rx_data_valid = 0;
+        state->tx_data_valid = 0;
+        state->rx_block_valid = 0;
+        state->rx_block_started = 0;
+        state->tx_block_valid = 0;
 
         new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
         state->protocol_state = new_state;
@@ -79,7 +87,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                     state->tx_counter = 0;
                     new_state = KW1281_PROTOCOL_STATE_CONNECT_ADDR;
                 } else {
-                    new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
+                    new_state = KW1281_PROTOCOL_STATE_DISCONNECT_REQUEST;
                 }
 
                 need_update = 1;
@@ -160,8 +168,9 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
         switch (state->protocol_state) {
             case KW1281_PROTOCOL_STATE_DISCONNECTED:
+            case KW1281_PROTOCOL_STATE_DISCONNECT_REQUEST:
             case KW1281_PROTOCOL_STATE_CONNECT_ADDR:
-                // should not happen as rx should be disabled
+                // should not happen as rx should be disabled or disconnect is requested
                 // ignore
 
                 break;
@@ -439,8 +448,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
     if (error) {
         //printk("> error: %d\n", state->error);
-        state->disconnect_request = 1;
-        new_state = KW1281_PROTOCOL_STATE_DISCONNECTED;
+        new_state = KW1281_PROTOCOL_STATE_DISCONNECT_REQUEST;
         need_update = 1;
     }
 
