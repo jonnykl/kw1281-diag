@@ -24,6 +24,7 @@
 #include <drivers/gpio.h>
 #include <shell/shell.h>
 #include <shell/shell_uart.h>
+#include <usb/usb_device.h>
 
 #include "kw1281.h"
 
@@ -1194,6 +1195,19 @@ static void async_error_callback (const struct kw1281_state *state, struct kw128
 
 
 void main (void) {
+    const struct device *dev = device_get_binding(CONFIG_UART_SHELL_ON_DEV_NAME);
+    uint32_t dtr = 0;
+
+    if (usb_enable(NULL)) {
+        return;
+    }
+
+    while (!dtr) {
+        uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
+    }
+
+
+
     k_msgq_init(&async_error_msgq, async_error_msgq_buffer, sizeof(struct kw1281_async_error), ASYNC_ERROR_MSGQ_LENGTH);
 
     k_thread_create(&async_error_handler_data, async_error_handler_stack, ASYNC_ERROR_HANDLER_THREAD_STACK_SIZE,
