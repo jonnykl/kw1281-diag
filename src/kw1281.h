@@ -29,6 +29,7 @@
 #define KW1281_KEY_WORD                         (1281)
 
 #define KW1281_BYTE_COMPLEMENT(x)               (~(x) & 0xFF)
+#define KW1281_TIMEOUT(state, id)               ((((uint32_t) ((state)->cfg.timeout_##id)) * ((state)->cfg.timeout_multiplier) + 50) / 100)
 
 
 #define KW1281_TX_THREAD_STACK_SIZE             (512)
@@ -94,11 +95,11 @@ struct kw1281_block {
 
 
 struct kw1281_config {
-    uint16_t default_baudrate;
+    uint16_t baudrate;
     uint8_t inter_byte_time_ms;                 // time between two bytes on the k line
     uint16_t inter_block_time_ms;
-
     uint16_t key_word_ack_delay_ms;
+    uint16_t timeout_multiplier;
 
     uint32_t timeout_connect_ms;
     uint32_t timeout_receive_block_ongoing_tx_ms;
@@ -177,6 +178,14 @@ struct kw1281_state {
 uint8_t kw1281_init(struct kw1281_state *state, const struct kw1281_config *config);
 uint8_t kw1281_get_baudrate(struct kw1281_state *state, uint16_t *baudrate);
 uint8_t kw1281_set_baudrate(struct kw1281_state *state, uint16_t baudrate);
+uint8_t kw1281_get_inter_byte_time_ms(struct kw1281_state *state, uint8_t *inter_byte_time_ms);
+uint8_t kw1281_set_inter_byte_time_ms(struct kw1281_state *state, uint8_t inter_byte_time_ms);
+uint8_t kw1281_get_inter_block_time_ms(struct kw1281_state *state, uint16_t *inter_block_time_ms);
+uint8_t kw1281_set_inter_block_time_ms(struct kw1281_state *state, uint16_t inter_block_time_ms);
+uint8_t kw1281_get_key_word_ack_delay_ms(struct kw1281_state *state, uint16_t *key_word_ack_delay_ms);
+uint8_t kw1281_set_key_word_ack_delay_ms(struct kw1281_state *state, uint16_t key_word_ack_delay_ms);
+uint8_t kw1281_get_timeout_multiplier(struct kw1281_state *state, uint16_t *timeout_multiplier);
+uint8_t kw1281_set_timeout_multiplier(struct kw1281_state *state, uint16_t timeout_multiplier);
 uint8_t kw1281_connect(struct kw1281_state *state, uint8_t addr, uint8_t wait);
 uint8_t kw1281_send_block(struct kw1281_state *state, const struct kw1281_block *block, uint8_t wait);
 uint8_t kw1281_receive_block(struct kw1281_state *state, struct kw1281_block *block);

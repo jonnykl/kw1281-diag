@@ -614,7 +614,7 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
         return 0;
     }
 
-    state->uart_cfg.baudrate = state->cfg.default_baudrate;
+    state->uart_cfg.baudrate = state->cfg.baudrate;
     state->uart_cfg.stop_bits = UART_CFG_STOP_BITS_1;
     state->uart_cfg.flow_ctrl = UART_CFG_FLOW_CTRL_NONE;
 
@@ -687,6 +687,78 @@ uint8_t kw1281_set_baudrate (struct kw1281_state *state, uint16_t baudrate) {
     return 1;
 }
 
+uint8_t kw1281_get_inter_byte_time_ms (struct kw1281_state *state, uint8_t *inter_byte_time_ms) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    *inter_byte_time_ms = state->cfg.inter_byte_time_ms;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_set_inter_byte_time_ms (struct kw1281_state *state, uint8_t inter_byte_time_ms) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    state->cfg.inter_byte_time_ms = inter_byte_time_ms;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_get_inter_block_time_ms (struct kw1281_state *state, uint16_t *inter_block_time_ms) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    *inter_block_time_ms = state->cfg.inter_block_time_ms;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_set_inter_block_time_ms (struct kw1281_state *state, uint16_t inter_block_time_ms) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    state->cfg.inter_block_time_ms = inter_block_time_ms;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_get_key_word_ack_delay_ms (struct kw1281_state *state, uint16_t *key_word_ack_delay_ms) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    *key_word_ack_delay_ms = state->cfg.key_word_ack_delay_ms;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_set_key_word_ack_delay_ms (struct kw1281_state *state, uint16_t key_word_ack_delay_ms) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    state->cfg.key_word_ack_delay_ms = key_word_ack_delay_ms;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_get_timeout_multiplier (struct kw1281_state *state, uint16_t *timeout_multiplier) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    *timeout_multiplier = state->cfg.timeout_multiplier;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_set_timeout_multiplier (struct kw1281_state *state, uint16_t timeout_multiplier) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    state->cfg.timeout_multiplier = timeout_multiplier;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
 uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
@@ -705,7 +777,7 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) 
     kw1281_update(state);
 
     if (wait) {
-        if (k_condvar_wait(&state->condvar_connect, &state->mutex, K_MSEC(state->cfg.timeout_connect_ms)) < 0) {
+        if (k_condvar_wait(&state->condvar_connect, &state->mutex, K_MSEC(KW1281_TIMEOUT(state, connect_ms))) < 0) {
             state->disconnect_request = 1;
             kw1281_update(state);
 
@@ -738,7 +810,7 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
     }
 
     if (state->tx_block_valid) {
-        if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_transmit_block_ongoing_tx_ms))) {
+        if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(KW1281_TIMEOUT(state, transmit_block_ongoing_tx_ms)))) {
             state->disconnect_request = 1;
             kw1281_update(state);
 
@@ -756,7 +828,7 @@ uint8_t kw1281_send_block (struct kw1281_state *state, const struct kw1281_block
     kw1281_update(state);
 
     if (wait && state->tx_block_valid) {
-        if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_transmit_block_tx_ms))) {
+        if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(KW1281_TIMEOUT(state, transmit_block_tx_ms)))) {
             state->disconnect_request = 1;
             kw1281_update(state);
 
@@ -784,7 +856,7 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
     if (!state->rx_block_valid) {
         if (state->tx_block_valid) {
             // no block received and currently transmitting a block -> wait until transmission is done
-            if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_ongoing_tx_ms)) < 0) {
+            if (k_condvar_wait(&state->condvar_tx_block, &state->mutex, K_MSEC(KW1281_TIMEOUT(state, receive_block_ongoing_tx_ms))) < 0) {
                 state->error = KW1281_ERROR_RECEIVE_BLOCK_TIMEOUT;
 
                 k_mutex_unlock(&state->mutex);
@@ -795,7 +867,7 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
         // now we must receive a block
 
         if (!state->rx_block_started) {
-            if (k_condvar_wait(&state->condvar_rx_block_started, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_rx_start_ms)) < 0) {
+            if (k_condvar_wait(&state->condvar_rx_block_started, &state->mutex, K_MSEC(KW1281_TIMEOUT(state, receive_block_rx_start_ms))) < 0) {
                 state->disconnect_request = 1;
                 kw1281_update(state);
 
@@ -807,7 +879,7 @@ uint8_t kw1281_receive_block (struct kw1281_state *state, struct kw1281_block *b
         }
 
         if (!state->rx_block_valid) {
-            if (k_condvar_wait(&state->condvar_rx_block, &state->mutex, K_MSEC(state->cfg.timeout_receive_block_rx_ms)) < 0) {
+            if (k_condvar_wait(&state->condvar_rx_block, &state->mutex, K_MSEC(KW1281_TIMEOUT(state, receive_block_rx_ms))) < 0) {
                 state->disconnect_request = 1;
                 kw1281_update(state);
 

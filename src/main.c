@@ -55,6 +55,10 @@ static int cmd_basic_setting(const struct shell *shell, size_t argc, char **argv
 static int cmd_send_raw_block(const struct shell *shell, size_t argc, char **argv);
 static int cmd_terminate(const struct shell *shell, size_t argc, char **argv);
 static int cmd_baudrate(const struct shell *shell, size_t argc, char **argv);
+static int cmd_inter_byte_time(const struct shell *shell, size_t argc, char **argv);
+static int cmd_inter_block_time(const struct shell *shell, size_t argc, char **argv);
+static int cmd_key_word_ack_delay(const struct shell *shell, size_t argc, char **argv);
+static int cmd_timeout_multiplier(const struct shell *shell, size_t argc, char **argv);
 
 static void keep_alive_thread(void *arg0, void *arg1, void *arg2);
 
@@ -1180,6 +1184,186 @@ static int cmd_baudrate (const struct shell *shell, size_t argc, char **argv) {
 }
 
 
+static int cmd_inter_byte_time (const struct shell *shell, size_t argc, char **argv) {
+    if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
+        shell_error(shell, "error: cannot lock state");
+        return 1;
+    }
+
+
+    char *end = NULL;
+    uint8_t inter_byte_time_ms = 0;
+
+    if (argc == 2) {
+        inter_byte_time_ms = strtoul(argv[1], &end, 10);
+
+        if (*end != '\0' || end == argv[1]) {
+            shell_error(shell, "error: invalid inter byte time");
+            return 1;
+        }
+    }
+
+    if (inter_byte_time_ms > 0) {
+        if (!kw1281_set_inter_byte_time_ms(&state, inter_byte_time_ms)) {
+            shell_error(shell, "error: set_inter_byte_time_ms: %s", kw1281_get_error_msg(&state));
+
+            k_mutex_unlock(&state_mutex);
+            return 1;
+        }
+    }
+
+    if (!kw1281_get_inter_byte_time_ms(&state, &inter_byte_time_ms)) {
+        shell_error(shell, "error: get_inter_byte_time_ms: %s", kw1281_get_error_msg(&state));
+
+        k_mutex_unlock(&state_mutex);
+        return 1;
+    }
+
+
+    k_mutex_unlock(&state_mutex);
+
+
+    shell_print(shell, "inter byte time (ms): %d", inter_byte_time_ms);
+
+    return 0;
+}
+
+
+static int cmd_inter_block_time (const struct shell *shell, size_t argc, char **argv) {
+    if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
+        shell_error(shell, "error: cannot lock state");
+        return 1;
+    }
+
+
+    char *end = NULL;
+    uint16_t inter_block_time_ms = 0;
+
+    if (argc == 2) {
+        inter_block_time_ms = strtoul(argv[1], &end, 10);
+
+        if (*end != '\0' || end == argv[1]) {
+            shell_error(shell, "error: invalid inter block time");
+            return 1;
+        }
+    }
+
+    if (inter_block_time_ms > 0) {
+        if (!kw1281_set_inter_block_time_ms(&state, inter_block_time_ms)) {
+            shell_error(shell, "error: set_inter_block_time_ms: %s", kw1281_get_error_msg(&state));
+
+            k_mutex_unlock(&state_mutex);
+            return 1;
+        }
+    }
+
+    if (!kw1281_get_inter_block_time_ms(&state, &inter_block_time_ms)) {
+        shell_error(shell, "error: get_inter_block_time_ms: %s", kw1281_get_error_msg(&state));
+
+        k_mutex_unlock(&state_mutex);
+        return 1;
+    }
+
+
+    k_mutex_unlock(&state_mutex);
+
+
+    shell_print(shell, "inter block time (ms): %d", inter_block_time_ms);
+
+    return 0;
+}
+
+
+static int cmd_key_word_ack_delay (const struct shell *shell, size_t argc, char **argv) {
+    if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
+        shell_error(shell, "error: cannot lock state");
+        return 1;
+    }
+
+
+    char *end = NULL;
+    uint16_t key_word_ack_delay_ms = 0;
+
+    if (argc == 2) {
+        key_word_ack_delay_ms = strtoul(argv[1], &end, 10);
+
+        if (*end != '\0' || end == argv[1]) {
+            shell_error(shell, "error: invalid key word ack delay");
+            return 1;
+        }
+    }
+
+    if (key_word_ack_delay_ms > 0) {
+        if (!kw1281_set_key_word_ack_delay_ms(&state, key_word_ack_delay_ms)) {
+            shell_error(shell, "error: set_key_word_ack_delay_ms: %s", kw1281_get_error_msg(&state));
+
+            k_mutex_unlock(&state_mutex);
+            return 1;
+        }
+    }
+
+    if (!kw1281_get_key_word_ack_delay_ms(&state, &key_word_ack_delay_ms)) {
+        shell_error(shell, "error: get_key_word_ack_delay_ms: %s", kw1281_get_error_msg(&state));
+
+        k_mutex_unlock(&state_mutex);
+        return 1;
+    }
+
+
+    k_mutex_unlock(&state_mutex);
+
+
+    shell_print(shell, "key word ack delay (ms): %d", key_word_ack_delay_ms);
+
+    return 0;
+}
+
+
+static int cmd_timeout_multiplier (const struct shell *shell, size_t argc, char **argv) {
+    if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
+        shell_error(shell, "error: cannot lock state");
+        return 1;
+    }
+
+
+    char *end = NULL;
+    uint16_t timeout_multiplier = 0;
+
+    if (argc == 2) {
+        timeout_multiplier = strtoul(argv[1], &end, 10);
+
+        if (*end != '\0' || end == argv[1]) {
+            shell_error(shell, "error: invalid timeout multiplier");
+            return 1;
+        }
+    }
+
+    if (timeout_multiplier > 0) {
+        if (!kw1281_set_timeout_multiplier(&state, timeout_multiplier)) {
+            shell_error(shell, "error: set_timeout_multiplier: %s", kw1281_get_error_msg(&state));
+
+            k_mutex_unlock(&state_mutex);
+            return 1;
+        }
+    }
+
+    if (!kw1281_get_timeout_multiplier(&state, &timeout_multiplier)) {
+        shell_error(shell, "error: get_timeout_multiplier: %s", kw1281_get_error_msg(&state));
+
+        k_mutex_unlock(&state_mutex);
+        return 1;
+    }
+
+
+    k_mutex_unlock(&state_mutex);
+
+
+    shell_print(shell, "timeout multiplier (100x): %d", timeout_multiplier);
+
+    return 0;
+}
+
+
 static void keep_alive_thread (void *arg0, void *arg1, void *arg2) {
     struct kw1281_block block;
 
@@ -1261,11 +1445,11 @@ void main (void) {
 
 
     struct kw1281_config config = {
-        .default_baudrate = 10400,
+        .baudrate = 10400,
         .inter_byte_time_ms = 10,
         .inter_block_time_ms = 30,
-
         .key_word_ack_delay_ms = 30,
+        .timeout_multiplier = 100,          // 1.00
 
         .timeout_connect_ms = 3000,
         .timeout_receive_block_ongoing_tx_ms = 1000,
@@ -1303,4 +1487,8 @@ SHELL_CMD_ARG_REGISTER(basic_setting, NULL, "Read group with adaption", cmd_basi
 SHELL_CMD_ARG_REGISTER(send_raw_block, NULL, "Send raw block", cmd_send_raw_block, 2, KW1281_MAX_BLOCK_DATA_LEN);
 SHELL_CMD_ARG_REGISTER(terminate, NULL, "Terminate connection", cmd_terminate, 1, 0);
 SHELL_CMD_ARG_REGISTER(baudrate, NULL, "Get/Set baudrate", cmd_baudrate, 1, 1);
+SHELL_CMD_ARG_REGISTER(inter_byte_time, NULL, "Get/Set inter byte time", cmd_inter_byte_time, 1, 1);
+SHELL_CMD_ARG_REGISTER(inter_block_time, NULL, "Get/Set inter block time", cmd_inter_block_time, 1, 1);
+SHELL_CMD_ARG_REGISTER(key_word_ack_delay, NULL, "Get/Set key word ack delay", cmd_key_word_ack_delay, 1, 1);
+SHELL_CMD_ARG_REGISTER(timeout_multiplier, NULL, "Get/Set timeout multiplier", cmd_timeout_multiplier, 1, 1);
 
