@@ -591,7 +591,7 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
         return 0;
     }
 
-    state->uart_cfg.baudrate = state->cfg.baudrate;
+    state->uart_cfg.baudrate = state->cfg.default_baudrate;
     state->uart_cfg.stop_bits = UART_CFG_STOP_BITS_1;
     state->uart_cfg.flow_ctrl = UART_CFG_FLOW_CTRL_NONE;
 
@@ -624,6 +624,24 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
     k_timer_init(&state->timer_rx, kw1281_timer_rx_handler, NULL);
     k_timer_user_data_set(&state->timer_rx, state);
 
+    return 1;
+}
+
+uint8_t kw1281_get_baudrate (struct kw1281_state *state, uint16_t *baudrate) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    *baudrate = state->uart_cfg.baudrate;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_set_baudrate (struct kw1281_state *state, uint16_t baudrate) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    state->uart_cfg.baudrate = baudrate;
+
+    k_mutex_unlock(&state->mutex);
     return 1;
 }
 

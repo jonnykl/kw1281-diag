@@ -94,7 +94,7 @@ struct kw1281_block {
 
 
 struct kw1281_config {
-    uint16_t baudrate;
+    uint16_t default_baudrate;
     uint8_t inter_byte_time_ms;                 // time between two bytes on the k line
     uint16_t inter_block_time_ms;
 
@@ -168,6 +168,8 @@ struct kw1281_state {
 
 
 uint8_t kw1281_init(struct kw1281_state *state, const struct kw1281_config *config);
+uint8_t kw1281_get_baudrate(struct kw1281_state *state, uint16_t *baudrate);
+uint8_t kw1281_set_baudrate(struct kw1281_state *state, uint16_t baudrate);
 uint8_t kw1281_connect(struct kw1281_state *state, uint8_t addr, uint8_t wait);
 uint8_t kw1281_send_block(struct kw1281_state *state, const struct kw1281_block *block, uint8_t wait);
 uint8_t kw1281_receive_block(struct kw1281_state *state, struct kw1281_block *block);

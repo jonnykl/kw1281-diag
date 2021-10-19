@@ -54,6 +54,7 @@ static int cmd_read_group(const struct shell *shell, size_t argc, char **argv);
 static int cmd_basic_setting(const struct shell *shell, size_t argc, char **argv);
 static int cmd_send_raw_block(const struct shell *shell, size_t argc, char **argv);
 static int cmd_terminate(const struct shell *shell, size_t argc, char **argv);
+static int cmd_baudrate(const struct shell *shell, size_t argc, char **argv);
 
 static void keep_alive_thread(void *arg0, void *arg1, void *arg2);
 
@@ -1134,6 +1135,51 @@ static int cmd_terminate (const struct shell *shell, size_t argc, char **argv) {
 }
 
 
+static int cmd_baudrate (const struct shell *shell, size_t argc, char **argv) {
+    if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
+        shell_error(shell, "error: cannot lock state");
+        return 1;
+    }
+
+
+    char *end = NULL;
+    uint16_t baudrate = 0;
+
+    if (argc == 2) {
+        baudrate = strtoul(argv[1], &end, 10);
+
+        if (*end != '\0' || end == argv[1]) {
+            shell_error(shell, "error: invalid baudrate");
+            return 1;
+        }
+    }
+
+    if (baudrate > 0) {
+        if (!kw1281_set_baudrate(&state, baudrate)) {
+            shell_error(shell, "error: set_baudrate: %s", kw1281_get_error_msg(&state));
+
+            k_mutex_unlock(&state_mutex);
+            return 1;
+        }
+    }
+
+    if (!kw1281_get_baudrate(&state, &baudrate)) {
+        shell_error(shell, "error: get_baudrate: %s", kw1281_get_error_msg(&state));
+
+        k_mutex_unlock(&state_mutex);
+        return 1;
+    }
+
+
+    k_mutex_unlock(&state_mutex);
+
+
+    shell_print(shell, "baudrate: %d", baudrate);
+
+    return 0;
+}
+
+
 static void keep_alive_thread (void *arg0, void *arg1, void *arg2) {
     struct kw1281_block block;
 
@@ -1215,7 +1261,7 @@ void main (void) {
 
 
     struct kw1281_config config = {
-        .baudrate = 10400,
+        .default_baudrate = 10400,
         .inter_byte_time_ms = 10,
         .inter_block_time_ms = 30,
 
@@ -1251,4 +1297,5 @@ SHELL_CMD_ARG_REGISTER(read_group, NULL, "Read group without adaption", cmd_read
 SHELL_CMD_ARG_REGISTER(basic_setting, NULL, "Read group with adaption", cmd_basic_setting, 2, 0);
 SHELL_CMD_ARG_REGISTER(send_raw_block, NULL, "Send raw block", cmd_send_raw_block, 2, KW1281_MAX_BLOCK_DATA_LEN);
 SHELL_CMD_ARG_REGISTER(terminate, NULL, "Terminate connection", cmd_terminate, 1, 0);
+SHELL_CMD_ARG_REGISTER(baudrate, NULL, "Get/Set baudrate", cmd_baudrate, 1, 1);
 
