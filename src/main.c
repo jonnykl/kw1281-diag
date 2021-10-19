@@ -1278,6 +1278,11 @@ void main (void) {
         .slow_init_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioa))),
         .slow_init_pin = 1,
 
+        .status_led_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioc))),
+        .status_led_pin = 13,
+        .status_led_active_low = 1,
+        .status_led_timeout_ms = 100,
+
         .async_error_callback = &async_error_callback,
     };
 

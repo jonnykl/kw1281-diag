@@ -530,12 +530,30 @@ static void kw1281_rx (struct k_work *work) {
             if (uart_poll_in(state->cfg.uart_dev, &state->rx_data) == 0) {
                 state->rx_data_valid = 1;
                 kw1281_update(state);
+
+                if (state->cfg.status_led_dev != NULL) {
+                    // ignore errors / return code
+                    gpio_pin_toggle(state->cfg.status_led_dev, state->cfg.status_led_pin);
+                    k_timer_start(&state->timer_status_led, K_MSEC(state->cfg.status_led_timeout_ms), K_NO_WAIT);
+                }
             }
         } else {
             kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_OVERRUN);
             state->disconnect_request = 1;
             kw1281_update(state);
         }
+    }
+
+    k_mutex_unlock(&state->mutex);
+}
+
+static void kw1281_status_led (struct k_work *work) {
+    struct kw1281_state *state = CONTAINER_OF(work, struct kw1281_state, work_timer_status_led);
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    if (state->cfg.status_led_dev != NULL) {
+        // ignore errors / return code
+        gpio_pin_set(state->cfg.status_led_dev, state->cfg.status_led_pin, 0);
     }
 
     k_mutex_unlock(&state->mutex);
@@ -555,6 +573,11 @@ static void kw1281_timer_tx_handler (struct k_timer *timer) {
 static void kw1281_timer_rx_handler (struct k_timer *timer) {
     struct kw1281_state *state = k_timer_user_data_get(timer);
     k_work_submit(&state->work_timer_rx);
+}
+
+static void kw1281_timer_status_led_handler (struct k_timer *timer) {
+    struct kw1281_state *state = k_timer_user_data_get(timer);
+    k_work_submit(&state->work_timer_status_led);
 }
 
 
@@ -611,9 +634,25 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
         return 0;
     }
 
+    if (state->cfg.status_led_dev != NULL) {
+        gpio_flags_t flags = GPIO_OUTPUT_INACTIVE;
+
+        if (state->cfg.status_led_active_low) {
+            flags |= GPIO_ACTIVE_LOW;
+        } else {
+            flags |= GPIO_ACTIVE_HIGH;
+        }
+
+        if (gpio_pin_configure(state->cfg.status_led_dev, state->cfg.status_led_pin, flags) < 0) {
+            state->error = KW1281_ERROR_UNKNOWN;
+            return 0;
+        }
+    }
+
     k_work_init(&state->work_timer_slow_init_tx, kw1281_slow_init_tx);
     k_work_init(&state->work_timer_tx, kw1281_tx);
     k_work_init(&state->work_timer_rx, kw1281_rx);
+    k_work_init(&state->work_timer_status_led, kw1281_status_led);
 
     k_timer_init(&state->timer_slow_init_tx, kw1281_timer_slow_init_tx_handler, NULL);
     k_timer_user_data_set(&state->timer_slow_init_tx, state);
@@ -623,6 +662,9 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
 
     k_timer_init(&state->timer_rx, kw1281_timer_rx_handler, NULL);
     k_timer_user_data_set(&state->timer_rx, state);
+
+    k_timer_init(&state->timer_status_led, kw1281_timer_status_led_handler, NULL);
+    k_timer_user_data_set(&state->timer_status_led, state);
 
     return 1;
 }

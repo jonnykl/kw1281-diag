@@ -111,6 +111,11 @@ struct kw1281_config {
     const struct device *slow_init_dev;
     int slow_init_pin;
 
+    const struct device *status_led_dev;
+    int status_led_pin;
+    int status_led_active_low;
+    uint32_t status_led_timeout_ms;
+
     kw1281_async_error_callback_t async_error_callback;
 };
 
@@ -125,9 +130,11 @@ struct kw1281_state {
     struct k_work work_timer_slow_init_tx;
     struct k_work work_timer_tx;
     struct k_work work_timer_rx;
+    struct k_work work_timer_status_led;
     struct k_timer timer_slow_init_tx;
     struct k_timer timer_tx;
     struct k_timer timer_rx;
+    struct k_timer timer_status_led;
 
     // protocol data
     enum kw1281_protocol_state protocol_state;
