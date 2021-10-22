@@ -40,11 +40,10 @@ static void kw1281_uart_tx (struct kw1281_state *state, uint8_t data, k_timeout_
 }
 
 // state mutex must be locked when calling this function
-static uint8_t kw1281_uart_configure (struct kw1281_state *state, uint8_t data_bits, uint8_t parity) {
+static uint8_t kw1281_uart_configure (struct kw1281_state *state) {
     uint8_t tmp;
 
-    state->uart_cfg.data_bits = data_bits;
-    state->uart_cfg.parity = parity;
+    state->uart_cfg.baudrate = state->cfg.baudrate;
 
     if (uart_configure(state->cfg.uart_dev, &state->uart_cfg) < 0) {
         kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_UART_CONFIG);
@@ -74,6 +73,12 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
             state->rx_enabled = 0;
         }
 
+        if (state->rx_auto_baud_enabled) {
+            // ignore errors / return code
+            gpio_pin_interrupt_configure(state->cfg.uart_rx_dev, state->cfg.uart_rx_pin, GPIO_INT_DISABLE);
+            state->rx_auto_baud_enabled = 0;
+        }
+
         k_mutex_lock(&state->dummy_mutex, K_NO_WAIT);
         k_condvar_wait(&state->condvar_connect, &state->dummy_mutex, K_NO_WAIT);
         k_condvar_wait(&state->condvar_rx_block, &state->dummy_mutex, K_NO_WAIT);
@@ -101,8 +106,7 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
             if (state->connect_request) {
                 state->connect_request = 0;
 
-                // some MCUs do not support 7 data bits, so always use 8 data bits and handle the parity bit in this module
-                if (kw1281_uart_configure(state, UART_CFG_DATA_BITS_8, UART_CFG_PARITY_NONE)) {
+                if (kw1281_uart_configure(state)) {
                     state->slow_init_started = 0;
                     state->tx_counter = 0;
                     new_state = KW1281_PROTOCOL_STATE_CONNECT_ADDR;
@@ -120,8 +124,18 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
                 state->slow_init_started = 1;
                 k_timer_start(&state->timer_slow_init_tx, K_NO_WAIT, K_MSEC(200));
             } else if (state->tx_counter == 11) {
-                k_timer_start(&state->timer_rx, K_NO_WAIT, K_MSEC(state->cfg.inter_byte_time_ms/5));
-                state->rx_enabled = 1;
+                if (!state->cfg.auto_baud) {
+                    k_timer_start(&state->timer_rx, K_NO_WAIT, K_MSEC(state->cfg.inter_byte_time_ms/5));
+                    state->rx_enabled = 1;
+                } else {
+                    state->rx_auto_baud_counter = 0;
+                    state->rx_auto_baud_enabled = 1;
+
+                    if (gpio_pin_interrupt_configure(state->cfg.uart_rx_dev, state->cfg.uart_rx_pin, GPIO_INT_EDGE_BOTH) < 0) {
+                        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_UNKNOWN);
+                        error = 1;
+                    }
+                }
 
                 new_state = KW1281_PROTOCOL_STATE_CONNECT_SYNC;
                 need_update = 1;
@@ -484,6 +498,16 @@ static void kw1281_update (struct kw1281_state *state) {
 }
 
 
+// state mutex must be locked when calling this function
+static void kw1281_update_status_led (struct kw1281_state *state) {
+    if (state->cfg.status_led_dev != NULL) {
+        // ignore errors / return code
+        gpio_pin_toggle(state->cfg.status_led_dev, state->cfg.status_led_pin);
+        k_timer_start(&state->timer_status_led, K_MSEC(state->cfg.status_led_timeout_ms), K_NO_WAIT);
+    }
+}
+
+
 static void kw1281_slow_init_tx (struct k_work *work) {
     struct kw1281_state *state = CONTAINER_OF(work, struct kw1281_state, work_timer_slow_init_tx);
     k_mutex_lock(&state->mutex, K_FOREVER);
@@ -530,18 +554,85 @@ static void kw1281_rx (struct k_work *work) {
             if (uart_poll_in(state->cfg.uart_dev, &state->rx_data) == 0) {
                 state->rx_data_valid = 1;
                 kw1281_update(state);
-
-                if (state->cfg.status_led_dev != NULL) {
-                    // ignore errors / return code
-                    gpio_pin_toggle(state->cfg.status_led_dev, state->cfg.status_led_pin);
-                    k_timer_start(&state->timer_status_led, K_MSEC(state->cfg.status_led_timeout_ms), K_NO_WAIT);
-                }
+                kw1281_update_status_led(state);
             }
         } else {
             kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_OVERRUN);
             state->disconnect_request = 1;
             kw1281_update(state);
         }
+    }
+
+    k_mutex_unlock(&state->mutex);
+}
+
+static void kw1281_rx_auto_baud (struct k_work *work) {
+    struct kw1281_state *state = CONTAINER_OF(work, struct kw1281_state, work_rx_auto_baud);
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    if (gpio_pin_interrupt_configure(state->cfg.uart_rx_dev, state->cfg.uart_rx_pin, GPIO_INT_DISABLE) < 0) {
+        kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_UNKNOWN);
+        state->disconnect_request = 1;
+        kw1281_update(state);
+
+        k_mutex_unlock(&state->mutex);
+        return;
+    }
+
+    if (state->rx_auto_baud_enabled) {
+        // 0x55 =  01010101
+        // 11111 0 10101010 1 11111
+        //       |          |
+        // start (inc)      end (excl)
+        // -> 9 bits
+
+        uint32_t avg = 0;
+        uint32_t delta;
+        int32_t deviation;
+
+        for (int i=0; i<9; i++) {
+            delta = state->rx_auto_baud_timestamps[i+1] - state->rx_auto_baud_timestamps[i];
+            state->rx_auto_baud_timestamps[i] = delta;
+
+            avg += delta;
+        }
+
+        avg /= 9;
+
+        for (int i=0; i<9; i++) {
+            deviation = ((int32_t) state->rx_auto_baud_timestamps[i]) - ((int32_t) avg);
+            deviation = deviation > 0 ? deviation : -deviation;
+
+            // allow a deviation of 25% of the average
+            if (deviation > avg/4) {
+                kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_CONNECT_NO_SYNC);
+                state->disconnect_request = 1;
+                kw1281_update(state);
+
+                k_mutex_unlock(&state->mutex);
+                return;
+            }
+        }
+
+        state->cfg.baudrate = ((sys_clock_hw_cycles_per_sec()*2 / avg) + 1)/2;
+
+        if (!kw1281_uart_configure(state)) {
+            kw1281_dispatch_async_error(state, KW1281_ASYNC_ERROR_UNKNOWN);
+            state->disconnect_request = 1;
+            kw1281_update(state);
+
+            k_mutex_unlock(&state->mutex);
+            return;
+        }
+
+        k_timer_start(&state->timer_rx, K_NO_WAIT, K_MSEC(state->cfg.inter_byte_time_ms/5));
+        state->rx_enabled = 1;
+
+        state->rx_data = 0x55;
+        state->rx_data_valid = 1;
+
+        kw1281_update(state);
+        kw1281_update_status_led(state);
     }
 
     k_mutex_unlock(&state->mutex);
@@ -581,6 +672,23 @@ static void kw1281_timer_status_led_handler (struct k_timer *timer) {
 }
 
 
+static void kw1281_uart_rx_callback (const struct device *port, struct gpio_callback *cb, gpio_port_pins_t pins) {
+    struct kw1281_state *state = CONTAINER_OF(cb, struct kw1281_state, uart_rx_callback);
+
+    uint32_t t = sys_clock_cycle_get_32();
+
+    if (state->rx_auto_baud_counter == 10) {
+        return;
+    }
+
+    state->rx_auto_baud_timestamps[state->rx_auto_baud_counter] = t;
+
+    if (++state->rx_auto_baud_counter == 10) {
+        k_work_submit(&state->work_rx_auto_baud);
+    }
+}
+
+
 uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *config) {
     memcpy(&state->cfg, config, sizeof(struct kw1281_config));
 
@@ -614,7 +722,10 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
         return 0;
     }
 
+    // some MCUs do not support 7 data bits, so always use 8 data bits and handle the parity bit in this module
     state->uart_cfg.baudrate = state->cfg.baudrate;
+    state->uart_cfg.data_bits = UART_CFG_DATA_BITS_8;
+    state->uart_cfg.parity = UART_CFG_PARITY_NONE;
     state->uart_cfg.stop_bits = UART_CFG_STOP_BITS_1;
     state->uart_cfg.flow_ctrl = UART_CFG_FLOW_CTRL_NONE;
 
@@ -628,8 +739,21 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
     state->connect_request = 0;
     state->disconnect_request = 0;
     state->rx_enabled = 0;
+    state->rx_auto_baud_enabled = 0;
 
     if (gpio_pin_configure(state->cfg.slow_init_dev, state->cfg.slow_init_pin, GPIO_OUTPUT_HIGH) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
+    if (gpio_pin_configure(state->cfg.uart_rx_dev, state->cfg.uart_rx_pin, GPIO_INPUT) < 0) {
+        state->error = KW1281_ERROR_UNKNOWN;
+        return 0;
+    }
+
+    gpio_init_callback(&state->uart_rx_callback, kw1281_uart_rx_callback, BIT(state->cfg.uart_rx_pin));
+
+    if (gpio_add_callback(state->cfg.uart_rx_dev, &state->uart_rx_callback) < 0) {
         state->error = KW1281_ERROR_UNKNOWN;
         return 0;
     }
@@ -653,6 +777,7 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
     k_work_init(&state->work_timer_tx, kw1281_tx);
     k_work_init(&state->work_timer_rx, kw1281_rx);
     k_work_init(&state->work_timer_status_led, kw1281_status_led);
+    k_work_init(&state->work_rx_auto_baud, kw1281_rx_auto_baud);
 
     k_timer_init(&state->timer_slow_init_tx, kw1281_timer_slow_init_tx_handler, NULL);
     k_timer_user_data_set(&state->timer_slow_init_tx, state);
@@ -672,7 +797,7 @@ uint8_t kw1281_init (struct kw1281_state *state, const struct kw1281_config *con
 uint8_t kw1281_get_baudrate (struct kw1281_state *state, uint16_t *baudrate) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
-    *baudrate = state->uart_cfg.baudrate;
+    *baudrate = state->cfg.baudrate;
 
     k_mutex_unlock(&state->mutex);
     return 1;
@@ -681,7 +806,25 @@ uint8_t kw1281_get_baudrate (struct kw1281_state *state, uint16_t *baudrate) {
 uint8_t kw1281_set_baudrate (struct kw1281_state *state, uint16_t baudrate) {
     k_mutex_lock(&state->mutex, K_FOREVER);
 
-    state->uart_cfg.baudrate = baudrate;
+    state->cfg.baudrate = baudrate;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_get_auto_baud (struct kw1281_state *state, uint8_t *auto_baud) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    *auto_baud = state->cfg.auto_baud;
+
+    k_mutex_unlock(&state->mutex);
+    return 1;
+}
+
+uint8_t kw1281_set_auto_baud (struct kw1281_state *state, uint8_t auto_baud) {
+    k_mutex_lock(&state->mutex, K_FOREVER);
+
+    state->cfg.auto_baud = auto_baud;
 
     k_mutex_unlock(&state->mutex);
     return 1;

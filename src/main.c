@@ -55,6 +55,7 @@ static int cmd_basic_setting(const struct shell *shell, size_t argc, char **argv
 static int cmd_send_raw_block(const struct shell *shell, size_t argc, char **argv);
 static int cmd_terminate(const struct shell *shell, size_t argc, char **argv);
 static int cmd_baudrate(const struct shell *shell, size_t argc, char **argv);
+static int cmd_auto_baud(const struct shell *shell, size_t argc, char **argv);
 static int cmd_inter_byte_time(const struct shell *shell, size_t argc, char **argv);
 static int cmd_inter_block_time(const struct shell *shell, size_t argc, char **argv);
 static int cmd_key_word_ack_delay(const struct shell *shell, size_t argc, char **argv);
@@ -1184,6 +1185,51 @@ static int cmd_baudrate (const struct shell *shell, size_t argc, char **argv) {
 }
 
 
+static int cmd_auto_baud (const struct shell *shell, size_t argc, char **argv) {
+    if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
+        shell_error(shell, "error: cannot lock state");
+        return 1;
+    }
+
+
+    char *end = NULL;
+    uint8_t auto_baud = 0xFF;
+
+    if (argc == 2) {
+        auto_baud = strtoul(argv[1], &end, 10);
+
+        if (*end != '\0' || end == argv[1] || (auto_baud != 0 && auto_baud != 1)) {
+            shell_error(shell, "error: invalid value");
+            return 1;
+        }
+    }
+
+    if (auto_baud != 0xFF) {
+        if (!kw1281_set_auto_baud(&state, auto_baud)) {
+            shell_error(shell, "error: set_auto_baud: %s", kw1281_get_error_msg(&state));
+
+            k_mutex_unlock(&state_mutex);
+            return 1;
+        }
+    }
+
+    if (!kw1281_get_auto_baud(&state, &auto_baud)) {
+        shell_error(shell, "error: get_auto_baud: %s", kw1281_get_error_msg(&state));
+
+        k_mutex_unlock(&state_mutex);
+        return 1;
+    }
+
+
+    k_mutex_unlock(&state_mutex);
+
+
+    shell_print(shell, "auto baud: %d", auto_baud);
+
+    return 0;
+}
+
+
 static int cmd_inter_byte_time (const struct shell *shell, size_t argc, char **argv) {
     if (k_mutex_lock(&state_mutex, K_MSEC(STATE_MUTEX_LOCK_TIMEOUT_MS)) != 0) {
         shell_error(shell, "error: cannot lock state");
@@ -1446,6 +1492,7 @@ void main (void) {
 
     struct kw1281_config config = {
         .baudrate = 10400,
+        .auto_baud = 1,
         .inter_byte_time_ms = 10,
         .inter_block_time_ms = 30,
         .key_word_ack_delay_ms = 30,
@@ -1461,6 +1508,8 @@ void main (void) {
         .uart_dev = device_get_binding(DT_LABEL(DT_NODELABEL(usart2))),
         .slow_init_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioa))),
         .slow_init_pin = 1,
+        .uart_rx_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioa))),
+        .uart_rx_pin = 4,
 
         .status_led_dev = device_get_binding(DT_LABEL(DT_NODELABEL(gpioc))),
         .status_led_pin = 13,
@@ -1487,6 +1536,7 @@ SHELL_CMD_ARG_REGISTER(basic_setting, NULL, "Read group with adaption", cmd_basi
 SHELL_CMD_ARG_REGISTER(send_raw_block, NULL, "Send raw block", cmd_send_raw_block, 2, KW1281_MAX_BLOCK_DATA_LEN);
 SHELL_CMD_ARG_REGISTER(terminate, NULL, "Terminate connection", cmd_terminate, 1, 0);
 SHELL_CMD_ARG_REGISTER(baudrate, NULL, "Get/Set baudrate", cmd_baudrate, 1, 1);
+SHELL_CMD_ARG_REGISTER(auto_baud, NULL, "Get/Set auto baud", cmd_auto_baud, 1, 1);
 SHELL_CMD_ARG_REGISTER(inter_byte_time, NULL, "Get/Set inter byte time", cmd_inter_byte_time, 1, 1);
 SHELL_CMD_ARG_REGISTER(inter_block_time, NULL, "Get/Set inter block time", cmd_inter_block_time, 1, 1);
 SHELL_CMD_ARG_REGISTER(key_word_ack_delay, NULL, "Get/Set key word ack delay", cmd_key_word_ack_delay, 1, 1);

@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include <zephyr.h>
+#include <drivers/gpio.h>
 #include <drivers/uart.h>
 
 
@@ -96,6 +97,7 @@ struct kw1281_block {
 
 struct kw1281_config {
     uint16_t baudrate;
+    uint8_t auto_baud;
     uint8_t inter_byte_time_ms;                 // time between two bytes on the k line
     uint16_t inter_block_time_ms;
     uint16_t key_word_ack_delay_ms;
@@ -111,6 +113,8 @@ struct kw1281_config {
     const struct device *uart_dev;
     const struct device *slow_init_dev;
     int slow_init_pin;
+    const struct device *uart_rx_dev;
+    int uart_rx_pin;
 
     const struct device *status_led_dev;
     int status_led_pin;
@@ -132,6 +136,7 @@ struct kw1281_state {
     struct k_work work_timer_tx;
     struct k_work work_timer_rx;
     struct k_work work_timer_status_led;
+    struct k_work work_rx_auto_baud;
     struct k_timer timer_slow_init_tx;
     struct k_timer timer_tx;
     struct k_timer timer_rx;
@@ -148,6 +153,10 @@ struct kw1281_state {
     struct kw1281_block rx_block;
     struct kw1281_block tx_block;
 
+    // auto baud rx
+    uint32_t rx_auto_baud_timestamps[10];
+    uint8_t rx_auto_baud_counter;
+
     // internal state
     enum kw1281_error error;
     uint8_t key_word_parity_error;
@@ -161,6 +170,7 @@ struct kw1281_state {
     uint8_t rx_block_started;
     uint8_t tx_block_valid;
     uint8_t rx_enabled;
+    uint8_t rx_auto_baud_enabled;
     uint8_t slow_init_started;
 
     // control
@@ -170,6 +180,9 @@ struct kw1281_state {
     // device configurations
     struct uart_config uart_cfg;
 
+    // gpio
+    struct gpio_callback uart_rx_callback;
+
     // configuration
     struct kw1281_config cfg;
 };
@@ -178,6 +191,8 @@ struct kw1281_state {
 uint8_t kw1281_init(struct kw1281_state *state, const struct kw1281_config *config);
 uint8_t kw1281_get_baudrate(struct kw1281_state *state, uint16_t *baudrate);
 uint8_t kw1281_set_baudrate(struct kw1281_state *state, uint16_t baudrate);
+uint8_t kw1281_get_auto_baud(struct kw1281_state *state, uint8_t *auto_baud);
+uint8_t kw1281_set_auto_baud(struct kw1281_state *state, uint8_t auto_baud);
 uint8_t kw1281_get_inter_byte_time_ms(struct kw1281_state *state, uint8_t *inter_byte_time_ms);
 uint8_t kw1281_set_inter_byte_time_ms(struct kw1281_state *state, uint8_t inter_byte_time_ms);
 uint8_t kw1281_get_inter_block_time_ms(struct kw1281_state *state, uint16_t *inter_block_time_ms);
