@@ -307,10 +307,11 @@ static uint8_t kw1281_update_step (struct kw1281_state *state) {
 
             case KW1281_PROTOCOL_STATE_RX_COUNTER:
                 if (!state->ack) {
-                    if (state->rx_data == state->counter) {
+                    if (!state->counter_valid || state->rx_data == state->counter) {
                         state->rx_block.counter = state->rx_data;
 
-                        state->counter++;
+                        state->counter = state->rx_block.counter+1;
+                        state->counter_valid = 1;
                         state->ack = 1;
 
                         ack_delay_ms = state->cfg.inter_byte_time_ms;
@@ -912,7 +913,8 @@ uint8_t kw1281_connect (struct kw1281_state *state, uint8_t addr, uint8_t wait) 
         return 0;
     }
 
-    state->counter = 1;
+    state->counter = 0;
+    state->counter_valid = 0;
 
     state->address = addr | 0x80;       // prepare for (odd) parity calculation
     state->connect_request = 1;

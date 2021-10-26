@@ -146,6 +146,7 @@ struct kw1281_state {
     enum kw1281_protocol_state protocol_state;
     uint16_t key_word;
     uint8_t counter;
+    uint8_t counter_valid;
 
     // rx/tx data
     uint8_t rx_data;
